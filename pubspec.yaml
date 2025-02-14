@@ -68,8 +68,10 @@ flutter:
   # the material Icons class.
   uses-material-design: true
   assets:
-    - assets/dm_sans.ttf
-    - assets/dm_sans_italic.ttf
+    - assets/DMSans-Regular.ttf
+    - assets/DMSans-Bold.ttf
+    - assets/DMSans-BoldItalic.ttf
+    - assets/DMSans-Italic.ttf
   # To add assets to your application, add an assets section, like this:
   # assets:
   #   - images/a_dot_burr.jpeg

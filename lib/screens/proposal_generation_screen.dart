@@ -110,8 +110,16 @@ class _ProposalGenerationScreenState extends State<ProposalGenerationScreen> {
             final Directory tempDir = await getTemporaryDirectory();
           if(Platform.isWindows) {
             final shell = Shell(workingDirectory: tempDir.path);
-            await shell.run('wget -o OllamaSetup.exe https://ollama.com/download/OllamaSetup.exe');
+            print('Downloading Ollama in ${tempDir.path}');
+            setState(() {
+              steps[0].feedback = 'Downloading Ollama...';
+            });
+            await shell.run("powershell -c \"Invoke-WebRequest -Uri 'https://ollama.com/download/OllamaSetup.exe' -OutFile 'OllamaSetup.exe'\"");
+            setState(() {
+              steps[0].feedback = 'Downloaded Ollama.\nRunning Ollama Setup';
+            });
             await shell.run('OllamaSetup.exe');
+
           } else if(Platform.isLinux) {
             final shell = Shell(workingDirectory: '~');
             await shell.run('curl -fsSL https://ollama.com/install.sh | sh');
@@ -483,13 +491,17 @@ ${proposalData['timeline']}
 # References
 ${proposalData['references'].map((e) => e['citation']).join('\n')}
 ''';      
-          final regularDM = await rootBundle.load("assets/dm_sans.ttf"); 
-          final italicDM = await rootBundle.load("assets/dm_sans_italic.ttf");
+          final baseFont = await rootBundle.load("assets/DMSans-Regular.ttf"); 
+          final boldFont = await rootBundle.load("assets/DMSans-Bold.ttf");
+          final italicFont = await rootBundle.load("assets/DMSans-Italic.ttf");
+          final boldItalicFont = await rootBundle.load("assets/DMSans-BoldItalic.ttf");
           final mdpdf.ThemeData t = mdpdf.ThemeData.withFont(
-            base: mdpdf.Font.ttf(regularDM),
-            bold: mdpdf.Font.ttf(regularDM),
-            boldItalic: mdpdf.Font.ttf(italicDM),
-            italic: mdpdf.Font.ttf(italicDM),
+            base: mdpdf.Font.ttf(baseFont),
+            bold: mdpdf.Font.ttf(boldFont),
+            boldItalic: mdpdf.Font.ttf(boldItalicFont),
+            italic: mdpdf.Font.ttf(italicFont),
+
+
         
           );
           final List<mdpdf.Widget> mdWidgets = await mdpdf.HTMLToPdf().convertMarkdown(markdownContent);
