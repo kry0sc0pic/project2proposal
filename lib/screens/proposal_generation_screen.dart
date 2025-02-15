@@ -107,11 +107,16 @@ class _ProposalGenerationScreenState extends State<ProposalGenerationScreen> {
             final Directory tempDir = await getTemporaryDirectory();
           if(Platform.isWindows) {
             final shell = Shell(workingDirectory: tempDir.path);
+            final Dio dio = Dio();
             print('Downloading Ollama in ${tempDir.path}');
             setState(() {
-              steps[0].feedback = 'Downloading Ollama...';
+              steps[0].feedback = 'Downloading Ollama: 0%';
             });
-            await shell.run("powershell -c \"Invoke-WebRequest -Uri 'https://ollama.com/download/OllamaSetup.exe' -OutFile 'OllamaSetup.exe'\"");
+            await dio.downloadUri(Uri.parse('https://ollama.com/download/OllamaSetup.exe'), tempDir.path+'/OllamaSetup.exe',onReceiveProgress: (count, total) => {
+              setState(() {
+                steps[0].feedback = 'Downloading Ollama: ${((count / total) * 100).toStringAsFixed(2)}%';
+              })
+            },);
             setState(() {
               steps[0].feedback = 'Downloaded Ollama.\nRunning Ollama Setup';
             });
@@ -161,7 +166,7 @@ class _ProposalGenerationScreenState extends State<ProposalGenerationScreen> {
             steps[0].feedback = 'Installed Ollama';
           });
           try {
-            Shell().run('open /Applications/Ollama.app --hide',);
+            Shell().run('open /Applications/Ollama.app',);
           } catch (e) {
             print(e);
           }
