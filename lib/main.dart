@@ -7,6 +7,7 @@ import 'models/proposal_details.dart';
 
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
   runApp(const ProposalApp());
 }
 

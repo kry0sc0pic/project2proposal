@@ -2,8 +2,7 @@ import 'dart:io';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:get/get.dart' hide Response;
+
 import 'package:get_storage/get_storage.dart';
 import 'package:open_file/open_file.dart';
 import 'package:path_provider/path_provider.dart';
@@ -12,8 +11,6 @@ import '../models/proposal_details.dart';
 import 'package:process_run/shell.dart';
 import 'package:ollama_dart/ollama_dart.dart';
 import 'dart:async';
-import 'package:htmltopdfwidgets/htmltopdfwidgets.dart' as mdpdf;
-
 class GenerationStep {
   final String title;
   final Future<void> Function() execute;
@@ -119,21 +116,52 @@ class _ProposalGenerationScreenState extends State<ProposalGenerationScreen> {
               steps[0].feedback = 'Downloaded Ollama.\nRunning Ollama Setup';
             });
             await shell.run('OllamaSetup.exe');
-
           } else if(Platform.isLinux) {
             final shell = Shell(workingDirectory: '~');
             await shell.run('curl -fsSL https://ollama.com/install.sh | sh');
           } else if(Platform.isMacOS) {
-            final shell = Shell(workingDirectory: tempDir.path);
-            await shell.run('wget -o Ollama-darwin.zip https://ollama.com/download/Ollama-darwin.zip');
+            
+            final Dio dio = Dio();
+            final Shell shell = Shell(workingDirectory: tempDir.path);
+            final ollamaFile = File('/Applications/Ollama.app');
+            print(ollamaFile.path);
+            if(ollamaFile.existsSync()) {
+              setState(() {
+                steps[0].feedback = 'Ollama.app found but not on path.\nOpening App...';
+              });
+              try {
+                Shell().run('open /Applications/Ollama.app',);
+              } catch (e) {
+                print(e);
+              }
+              return;
+            }
+            
+
+            setState(() {
+              steps[0].feedback = 'Downloading Ollama: 0%';
+            });
+            await dio.downloadUri(Uri.parse('https://ollama.com/download/Ollama-darwin.zip'), tempDir.path+'/Ollama-darwin.zip',onReceiveProgress: (count, total) => {
+              setState(() {
+                steps[0].feedback = 'Downloading Ollama: ${((count / total) * 100).toStringAsFixed(2)}%';
+              })
+            },);
+            setState(() {
+              steps[0].feedback = 'Downloaded Ollama\nExtracting Ollama...';
+            });
             await shell.run('unzip Ollama-darwin.zip');
-            await shell.run('mv Ollama-darwin/Ollama.app /Applications');
+            setState(() {
+              steps[0].feedback = steps[0].feedback! + 'Done.\nCopying to /Applications. Please allow permissions when prompted';
+            });
+            await shell.run('mv Ollama.app /Applications/Ollama.app');
+            await shell.run('rm Ollama-darwin.zip');
+            await shell.run('open /Applications/Ollama.app --hide');
           }
           setState(() {
-            steps[0].feedback = 'Started Ollama';
+            steps[0].feedback = 'Installed Ollama';
           });
           try {
-            Shell().run('ollama serve',);
+            Shell().run('open /Applications/Ollama.app --hide',);
           } catch (e) {
             print(e);
           }
@@ -344,15 +372,15 @@ class _ProposalGenerationScreenState extends State<ProposalGenerationScreen> {
           print('Generating timeline');
           final date = DateTime.now();
           
-          final titleStream = ollamaClient.generateCompletionStream(request: GenerateCompletionRequest(model: 'phi4:14b', prompt:  'Write a timeline for the project as a table with the task and the deadline for each task. Today is ${date.day}/${date.month}/${date.year}. Only respond with the table in mardown format and nothing else: ${widget.proposalDetails.projectDescription}'));
+          final titleStream = ollamaClient.generateCompletionStream(request: GenerateCompletionRequest(model: 'phi4:14b', prompt:  'Write a timeline for the project as a table with the task and the deadline for each task. Today is ${date.day}/${date.month}/${date.year}. Only respond with the table in markdown format and nothing else: ${widget.proposalDetails.projectDescription}'));
           await for (final res in titleStream) {
             proposalData['timeline'] += res.response ?? '';
             setState(() {
               steps[11].feedback = proposalData['timeline'];
             });
           }
-          proposalData['timeline'] = proposalData['timeline'].replaceAll('```markdown','').split('```')[0];
-          
+          proposalData['timeline'] = proposalData['timeline'].replaceAll('```markdown\n','').split('\n```')[0];
+          print(proposalData['timeline']);
           setState(() {
               steps[11].feedback = proposalData['timeline'];
           });
@@ -453,12 +481,15 @@ class _ProposalGenerationScreenState extends State<ProposalGenerationScreen> {
               result['citation'] = citations[0]['citation'];
               result['citation_style'] = citations[0]['style'];
             }
+            setState(() {
+              steps[12].feedback = (steps[12].feedback ?? '') + '\n\n\n' + result['citation'];
+            });
             
           }
 
           proposalData['references'] = resultsFiltered;
           setState(() {
-            steps[13].feedback = (steps[14].feedback ?? '') + resultsFiltered.map((e) => e['citation']).join('\n\n\n');
+            steps[12].feedback = (steps[12].feedback ?? '') + resultsFiltered.map((e) => e['citation']).join('\n\n\n');
           });
         },
       ),
@@ -466,6 +497,7 @@ class _ProposalGenerationScreenState extends State<ProposalGenerationScreen> {
         title: 'Saving PDF File',
         execute: () async {
           final Directory? downloadsDirectory = await getDownloadsDirectory();
+          final Directory? tempDir = await getTemporaryDirectory();
           final String markdownContent = 
           '''
 # Title
@@ -487,29 +519,50 @@ ${proposalData['studyEndPoints']}
 # Budget
 yay
 # Timeline
+
 ${proposalData['timeline']}
+
 # References
-${proposalData['references'].map((e) => e['citation']).join('\n')}
+${proposalData['references'].map((e) => e['citation']).join('\n\n')}
 ''';      
-          final baseFont = await rootBundle.load("assets/DMSans-Regular.ttf"); 
-          final boldFont = await rootBundle.load("assets/DMSans-Bold.ttf");
-          final italicFont = await rootBundle.load("assets/DMSans-Italic.ttf");
-          final boldItalicFont = await rootBundle.load("assets/DMSans-BoldItalic.ttf");
-          final mdpdf.ThemeData t = mdpdf.ThemeData.withFont(
-            base: mdpdf.Font.ttf(baseFont),
-            bold: mdpdf.Font.ttf(boldFont),
-            boldItalic: mdpdf.Font.ttf(boldItalicFont),
-            italic: mdpdf.Font.ttf(italicFont),
+
+          try{
+            final dio = Dio();
+          final Response response = await dio.post('https://md2pdf.krishaay.dev/md2pdf',data: {
+            'markdown' : markdownContent,
+          },options: Options(
+            responseType: ResponseType.bytes
+          ));
+          final savePath = '${downloadsDirectory!.path}/.pdf';
+          File(savePath).writeAsBytesSync(response.data as List<int>);
+          steps[13].feedback = 'Saved to: $savePath';
+          } catch (e) {
+            throw e;
+          }
+          
+
+
+          // print(markdownContent);
+          // final baseFont = await rootBundle.load("assets/DMSans-Regular.ttf"); 
+          // final boldFont = await rootBundle.load("assets/DMSans-Bold.ttf");
+          // final italicFont = await rootBundle.load("assets/DMSans-Italic.ttf");
+          // final boldItalicFont = await rootBundle.load("assets/DMSans-BoldItalic.ttf");
+          // final mdpdf.ThemeData t = mdpdf.ThemeData.withFont(
+          //   base: mdpdf.Font.ttf(baseFont),
+          //   bold: mdpdf.Font.ttf(boldFont),
+          //   boldItalic: mdpdf.Font.ttf(boldItalicFont),
+          //   italic: mdpdf.Font.ttf(italicFont),
 
 
         
-          );
-          final List<mdpdf.Widget> mdWidgets = await mdpdf.HTMLToPdf().convertMarkdown(markdownContent);
-          final markdownPDF = mdpdf.Document(theme: t,author: "Project2Proposal",title: "Proposal",);
-          markdownPDF.addPage(mdpdf.MultiPage(pageFormat: mdpdf.PdfPageFormat.a4,build: (context) => mdWidgets));
-          final pdfPath = '${downloadsDirectory!.path}/proposal.pdf';
-          File(pdfPath).writeAsBytes(await markdownPDF.save());
-          steps[13].feedback = 'Saved to: $pdfPath';
+          // );
+          // final htmlContent = md.markdownToHtml(markdownContent,extensionSet: md.ExtensionSet.commonMark);
+          // final List<mdpdf.Widget> mdWidgets = await mdpdf.HTMLToPdf().convert(htmlContent);
+          // final htmlPDF = mdpdf.Document(theme: t,author: "Project2Proposal",title: "Proposal",);
+          // htmlPDF.addPage(mdpdf.MultiPage(pageFormat: mdpdf.PdfPageFormat.a4,build: (context) => mdWidgets));
+          // final pdfPath = '${downloadsDirectory!.path}/proposal.pdf';
+          // File(pdfPath).writeAsBytes(await htmlPDF.save());
+          
         },
       ),
       GenerationStep(

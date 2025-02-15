@@ -68,6 +68,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
               obscureText: false,
             ),
+            
             const SizedBox(height: 24),
             Text(
               'Citation Style',
