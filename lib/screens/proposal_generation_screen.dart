@@ -2,15 +2,18 @@ import 'dart:io';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
-
 import 'package:get_storage/get_storage.dart';
 import 'package:open_file/open_file.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:sanitize_filename/sanitize_filename.dart';
 import '../constants.dart' as app_colors;
 import '../models/proposal_details.dart';
 import 'package:process_run/shell.dart';
 import 'package:ollama_dart/ollama_dart.dart';
+import 'package:process_run/shell.dart';
 import 'dart:async';
+import 'dart:convert';
+
 class GenerationStep {
   final String title;
   final Future<void> Function() execute;
@@ -61,7 +64,7 @@ class _ProposalGenerationScreenState extends State<ProposalGenerationScreen> {
     'objectives': '',
     'methodology': '',
     'studyEndPoints': '',
-    'budget': [],
+    'budget': <Map<String,dynamic>> [],
     'timeline': '',
     'references': [],
   };
@@ -70,6 +73,7 @@ class _ProposalGenerationScreenState extends State<ProposalGenerationScreen> {
   Set<int> _collapsedSteps = {};  // Add this to track collapsed states
   Timer? _durationTimer;
   bool _isCancelled = false;
+  Set<int> _completedSteps = {};
 
   @override
   void initState() {
@@ -82,6 +86,92 @@ class _ProposalGenerationScreenState extends State<ProposalGenerationScreen> {
   void dispose() {
     _durationTimer?.cancel();
     super.dispose();
+  }
+
+  String citationKey(String style) {
+    switch(style) {
+      case 'apa':
+        return 'APA';
+      case 'modern-language-association-with-url':
+        return 'MLA';
+      case 'harvard':
+        return 'harvard1';
+      default:
+        return 'apa';
+    }
+  }
+
+Future<  Map<String,dynamic>?> getProductData(String link,String bs_key) async {
+    final String ep = "https://production-lon.browserless.io/chrome/bql";
+    final Dio _dio = Dio();
+    final Uri uri = Uri.parse(link);
+
+     String host = uri.host;
+    if(host == "") return null;
+    if(host.startsWith('www.')){
+      host = host.substring(4);
+    }
+    print(link);
+    switch(host){
+      
+      case "robu.in":
+        final Response r = await _dio.post(ep,
+        options: Options(
+          headers: {
+            'Content-Type': 'application/json',
+          }
+        ),
+        queryParameters: {
+          'humanlike': 'true',
+          'token': bs_key,
+        },
+        data: {
+          'variables': null,
+          'operationName': 'robuSearch',
+          'query': 'mutation robuSearch {\n  goto(\n    url: \"https://robu.in/product/orange-ifr10440-200mah-lifepo4-battery/\"\n    waitUntil: firstContentfulPaint\n  ) {\n    status\n  }\n  productTitle: text(selector: \".product_title\") {\n    text\n  }\n  price: querySelectorAll(selector: \".woocommerce-Price-amount\") {\n    innerText\n  }\n}'
+        },
+        
+        );
+        print(r.data);
+        print(r.statusCode);
+        final Map<String,dynamic> data = (r.data as Map<String,dynamic>)['data'];
+        final Map<String,dynamic> productData = {
+          'name': data['productTitle']['text'],
+          'price': data['price'][1]['innerText'],
+        };
+        return productData;
+      
+
+      case 'amazon.in':
+        final Response r = await _dio.post(ep,
+        options: Options(
+          headers: {
+            'Content-Type': 'application/json',
+          }
+        ),
+        queryParameters: {
+          'humanlike': 'true',
+          'token': bs_key,
+        },
+        data: {
+          'variables': null,
+          'operationName': 'amazonSearch',
+          'query': 'mutation amazonSearch {\n  goto(\n    url: \"$link"\n    waitUntil: firstContentfulPaint\n  ) {\n    status\n  }\n  name: text(selector: \".product-title-word-break\") {\n    text\n  }\n  price: text(selector: \".reinventPricePriceToPayMargin\") {\n    text\n  }\n}'
+        },
+        
+        );
+        print(r.data);
+        print(r.statusCode);
+        final Map<String,dynamic> data = (r.data as Map<String,dynamic>)['data'];
+        final Map<String,dynamic> productData = {
+          'name': data['name']['text'],
+          'price': data['price']['text'],
+        };
+        return productData;
+       default:
+        return null;
+
+    }
   }
 
   void _initializeSteps() {
@@ -120,7 +210,8 @@ class _ProposalGenerationScreenState extends State<ProposalGenerationScreen> {
             setState(() {
               steps[0].feedback = 'Downloaded Ollama.\nRunning Ollama Setup';
             });
-            await shell.run('OllamaSetup.exe');
+            shell.run('${tempDir.path}\\OllamaSetup.exe');
+            
           } else if(Platform.isLinux) {
             final shell = Shell(workingDirectory: '~');
             await shell.run('curl -fsSL https://ollama.com/install.sh | sh');
@@ -252,8 +343,6 @@ class _ProposalGenerationScreenState extends State<ProposalGenerationScreen> {
           });
         },
       ),
-   
-     
       GenerationStep(
         title: 'Title',
         execute: () async {
@@ -267,6 +356,12 @@ class _ProposalGenerationScreenState extends State<ProposalGenerationScreen> {
           }
           if(proposalData['title'].contains('---')){
             proposalData['title'] = proposalData['title'].split('---')[0];
+            setState(() {
+              steps[3].feedback = proposalData['title'];
+            });
+          }
+          if(proposalData['title'].contains('\n\n')){
+            proposalData['title'] = proposalData['title'].split('\n\n')[0];
             setState(() {
               steps[3].feedback = proposalData['title'];
             });
@@ -369,8 +464,7 @@ class _ProposalGenerationScreenState extends State<ProposalGenerationScreen> {
             });
           }
         }
-      ),
-      
+      ),      
       GenerationStep(
         title: 'Timeline',
         execute: () async {
@@ -422,6 +516,10 @@ class _ProposalGenerationScreenState extends State<ProposalGenerationScreen> {
           if(searchQuery.contains('---')){
             searchQuery = searchQuery.split('---')[0];
           }
+          if(searchQuery.contains('\n\n')){
+            searchQuery = searchQuery.split('\n\n')[0];
+          }
+          searchQuery = searchQuery.trim();
           setState(() {
             steps[12].feedback = 'Search Term: "$searchQuery"\n';
           });
@@ -469,14 +567,14 @@ class _ProposalGenerationScreenState extends State<ProposalGenerationScreen> {
             if (result['link'] == null) {
               continue;
             }
-            final Response cite_response = await dio.get("https://api.citeas.org/product/${result['link']}",queryParameters: {
+            final Response citationResponse = await dio.get("https://api.citeas.org/product/${result['link']}",queryParameters: {
               'email': 'project2proposal@krishaay.dev',
             });
-            final cite_data = cite_response.data as Map<String, dynamic>;
-            final citations = cite_data['citations'] as List<dynamic>;
-            final cite_style = storage.read('CITATION_STYLE').toString().toLowerCase() == 'apa' ? 'apa' : 'modern-language-association-with-url';
+            final citationData = citationResponse.data as Map<String, dynamic>;
+            final citations = citationData['citations'] as List<dynamic>;
+            final citationStyle = citationKey(storage.read('CITATION_STYLE').toString().toLowerCase());
             for(final citation in citations) {
-              if(citation['style_shortname'] == cite_style) {
+              if(citation['style_shortname'] == citationStyle) {
                 result['citation'] = citation['citation'];
                 result['citation_style'] = citation['style'];
                 break;
@@ -487,22 +585,120 @@ class _ProposalGenerationScreenState extends State<ProposalGenerationScreen> {
               result['citation_style'] = citations[0]['style'];
             }
             setState(() {
-              steps[12].feedback = (steps[12].feedback ?? '') + '\n\n\n' + result['citation'];
+              steps[12].feedback = (steps[12].feedback ?? '') + '\n\n' + result['citation'];
             });
             
           }
 
           proposalData['references'] = resultsFiltered;
-          setState(() {
-            steps[12].feedback = (steps[12].feedback ?? '') + resultsFiltered.map((e) => e['citation']).join('\n\n\n');
-          });
+         
         },
       ),
+      GenerationStep(title: "Budget", execute: () async {
+        final List<String> budgetLinks = widget.proposalDetails.hardwareLinks;
+        final Dio dio = Dio();
+        final GetStorage storage = GetStorage();
+        final String? bs_key = storage.read('BROWSERLESS_API_KEY');
+        if(bs_key == null) {
+          setState(() {
+            steps[13].feedback = 'Skipping budget as Browserless API Key is not set';
+          });
+          return;
+        }
+        final List<String> toBeScrapedWithAI = [];
+        for(final link in budgetLinks) {
+          final productData = await getProductData(link,bs_key);
+          if(productData == null) {
+            toBeScrapedWithAI.add(link);
+            continue;
+          }
+          proposalData['budget'].add(productData);
+          setState(() {
+            steps[13].feedback = (steps[13].feedback ?? '') + '\n\n\nTitle: ${productData['name']}\nPrice: ${productData['price']}';
+          });
+        }
+        if (toBeScrapedWithAI.isEmpty) {
+          return;
+        }
+        setState(() {
+          steps[13].feedback = (steps[13].feedback ?? '') + '\nScraping Pending Links:\n${toBeScrapedWithAI.join('\n')}';
+        });
+
+        try {
+          // Start scraping task
+          final Response r = await dio.postUri(
+            Uri.parse('https://md2pdf.krishaay.dev/scrape_info'),
+            data: {'links': toBeScrapedWithAI,
+            'openAIKey': storage.read('OPENAI_API_KEY'),
+            'browserless_token': bs_key,
+            },
+          );
+          
+          if (r.statusCode != 200) {
+            setState(() {
+              steps[13].feedback = (steps[13].feedback ?? '') + '\n\nError starting scraping task';
+            });
+            return;
+          }
+          
+          final String taskId = (r.data as Map<String, dynamic>)['task_id'];
+          
+          // Poll for results
+          while (true) {
+            final Response statusResponse = await dio.getUri(
+              Uri.parse('https://md2pdf.krishaay.dev/scrape_status/$taskId'),
+              options: Options(
+              validateStatus: (status) {
+                return status == 200 || status == 404;
+              },)
+            );
+            
+            if (statusResponse.statusCode == 404) {
+              setState(() {
+                steps[13].feedback = (steps[13].feedback ?? '') + '\n\nTask not found';
+              });
+              break;
+            }
+            
+            final Map<String, dynamic> status = statusResponse.data;
+            
+            if (status['status'] == 'in_progress') {
+              // Wait before next poll
+              await Future.delayed(Duration(seconds: 3));
+              continue;
+            }
+            
+            if (status['status'] == 'complete') {
+              final List<dynamic> results = status['results'];
+              for (final result in results) {
+                proposalData['budget'].add(result);
+                setState(() {
+                  steps[13].feedback = (steps[13].feedback ?? '') + 
+                    '\n\n\nTitle: ${result['name']}\nPrice: ${result['price']}';
+                });
+              }
+              break;
+            }
+            
+            if (status['status'] == 'error') {
+              setState(() {
+                steps[13].feedback = (steps[13].feedback ?? '') + 
+                  '\n\nError scraping: ${status['error']}';
+              });
+              break;
+            }
+          }
+        } catch (e) {
+          setState(() {
+            steps[13].feedback = (steps[13].feedback ?? '') + '\n\nError: $e';
+          });
+        }
+      }),
       GenerationStep(
-        title: 'Saving PDF File',
+        title: 'Export to PDF',
         execute: () async {
           final Directory? downloadsDirectory = await getDownloadsDirectory();
-          final Directory? tempDir = await getTemporaryDirectory();
+          steps[14].feedback = 'PDFs can take up to a minute to generate depending on server status. Please be patient.';
           final String markdownContent = 
           '''
 # Title
@@ -522,7 +718,10 @@ ${proposalData['methodology']}
 # Study End Point
 ${proposalData['studyEndPoints']}
 # Budget
-yay
+| Name | Price | 
+| --- | --- | 
+${proposalData['budget'].map((e) => '| ${e['name']} | ${e['price']} |').join('\n')}
+
 # Timeline
 
 ${proposalData['timeline']}
@@ -538,9 +737,11 @@ ${proposalData['references'].map((e) => e['citation']).join('\n\n')}
           },options: Options(
             responseType: ResponseType.bytes
           ));
-          final savePath = '${downloadsDirectory!.path}/.pdf';
+          String santizedTitle = sanitizeFilename(proposalData['title']+'.pdf');
+          final savePath = '${downloadsDirectory!.path}/$santizedTitle';
           File(savePath).writeAsBytesSync(response.data as List<int>);
-          steps[13].feedback = 'Saved to: $savePath';
+          steps[14].feedback = 'Saved to: $savePath';
+          steps[15].feedback = savePath;
           } catch (e) {
             throw e;
           }
@@ -573,10 +774,8 @@ ${proposalData['references'].map((e) => e['citation']).join('\n\n')}
       GenerationStep(
         title: 'Proposal Complete',
         execute: () async {
-          final Directory? downloadsDirectory = await getDownloadsDirectory();
-          final pdfPath = '${downloadsDirectory!.path}/proposal.pdf';
-          await OpenFile.open(pdfPath);
-          steps[14].feedback = 'Opened PDF';
+          OpenFile.open(steps[15].feedback!,type: 'application/pdf');
+          steps[15].feedback = 'Opened PDF';
         },
       ),
     ];
@@ -625,6 +824,7 @@ ${proposalData['references'].map((e) => e['citation']).join('\n\n')}
         
         setState(() {
           steps[i].duration = DateTime.now().difference(steps[i].startTime!);
+          _completedSteps.add(i);
           if (i < steps.length - 2) {
             _currentStep = i + 1;
           }
@@ -643,6 +843,27 @@ ${proposalData['references'].map((e) => e['citation']).join('\n\n')}
       _currentStep = steps.length - 1;
     });
     _isProcessing = false;
+  }
+
+  Future<void> _rerunStep(int index) async {
+    if (_isProcessing) return;
+    
+    setState(() {
+      steps[index].feedback = null;
+      steps[index].startTime = DateTime.now();
+      _stepErrors[index] = '';
+    });
+    
+    try {
+      await steps[index].execute();
+      setState(() {
+        steps[index].duration = DateTime.now().difference(steps[index].startTime!);
+      });
+    } catch (e) {
+      setState(() {
+        _stepErrors[index] = e.toString();
+      });
+    }
   }
 
   void continueExecution() {
@@ -689,7 +910,16 @@ ${proposalData['references'].map((e) => e['citation']).join('\n\n')}
     return Scaffold(
       appBar: AppBar(
         title: const Text('Building Proposal'),
-        automaticallyImplyLeading: false,
+        automaticallyImplyLeading: _currentStep == steps.length - 1 || _isCancelled,
+        leading: (_currentStep == steps.length - 1 || _isCancelled) 
+          ? IconButton(
+              icon: const Icon(Icons.arrow_back),
+              onPressed: () {
+                Navigator.of(context).pop();
+              },
+              tooltip: 'Create New Proposal',
+            )
+          : null,
         actions: [
           if (_isProcessing)
             IconButton(
@@ -762,6 +992,16 @@ ${proposalData['references'].map((e) => e['citation']).join('\n\n')}
                           size: 20,
                           color: app_colors.primary,
                         ),
+                        if ((_currentStep == steps.length - 1 || _isCancelled) && 
+                            _completedSteps.contains(index) &&
+                            index != steps.length - 1) // Don't show for final step
+                          IconButton(
+                            icon: const Icon(Icons.refresh),
+                            tooltip: 'Regenerate this section',
+                            onPressed: () => _rerunStep(index),
+                            iconSize: 20,
+                            color: app_colors.primary,
+                          ),
                         const Spacer(),
                       ],
                     ),

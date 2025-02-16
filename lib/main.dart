@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:get_storage/get_storage.dart';
 import 'package:project2proposal/screens/settings_screen.dart';
 import 'constants.dart' as app_colors;
 import 'screens/proposal_generation_screen.dart';
@@ -8,6 +9,8 @@ import 'models/proposal_details.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  final GetStorage storage = GetStorage();
+  storage.getKeys();
   runApp(const ProposalApp());
 }
 

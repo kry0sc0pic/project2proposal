@@ -1,3 +1,4 @@
 {
-  "dart.flutterSdkPath": ".fvm/versions/3.29.0"
+  "dart.flutterSdkPath": ".fvm/versions/3.29.0",
+  "cmake.sourceDirectory": "/Users/kryo/Desktop/DYLAB/project_2_proposal/linux"
 }
