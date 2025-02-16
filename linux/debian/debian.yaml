@@ -1,0 +1,19 @@
+flutter_app: 
+  command: project2proposal
+  arch: x64
+  parent: /usr/local/lib
+  nonInteractive: false
+
+control:
+  Package: Project2Proposal
+  Version: 1.0.0
+  Architecture: amd64
+  Priority: optional
+  Depends: pkexec
+  Maintainer: Krishaay Jois <krishaayjois@gmail.com>
+  Description: Convert project descriptions and bill of materials into a proposal using AI.
+  
+  
+#options:
+#  exec_out_dir: debian/packages
+# /usr/local/lib/Project2Proposal/project2proposal 

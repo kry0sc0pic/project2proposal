@@ -213,8 +213,17 @@ Future<  Map<String,dynamic>?> getProductData(String link,String bs_key) async {
             shell.run('${tempDir.path}\\OllamaSetup.exe');
             
           } else if(Platform.isLinux) {
-            final shell = Shell(workingDirectory: '~');
-            await shell.run('curl -fsSL https://ollama.com/install.sh | sh');
+            final Dio dio = Dio();
+            print('Downloading Ollama in ${tempDir.path}');
+            final shell = Shell(workingDirectory: tempDir.path);
+            await dio.downloadUri(Uri.parse('https://ollama.com/install.sh'), tempDir.path+'/ollama.sh',onReceiveProgress: (count, total) => {
+              setState(() {
+                steps[0].feedback = 'Downloading Ollama: ${((count / total) * 100).toStringAsFixed(2)}%';
+              })
+            },);
+            await shell.run('chmod +x ollama.sh');
+            await shell.run('pkexec ./ollama.sh');
+            await shell.run('rm ollama.sh');
           } else if(Platform.isMacOS) {
             
             final Dio dio = Dio();

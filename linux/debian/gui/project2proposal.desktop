@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Name=Project2Proposal
+GenericName=Project2Proposal
+Comment=Convert project descriptions and bill of materials into a proposal using AI.
+Terminal=false
+Type=Application
+Categories=Utility
+Keywords=Flutter;share;files
+Exec=/usr/local/lib/Project2Proposal/project2proposal 
