@@ -1,31 +1,39 @@
-import 'dart:io';
+import 'dart:io' show Platform, Directory, File;
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'dart:typed_data';
 
+import 'package:dart_openai/dart_openai.dart';
 import 'package:dio/dio.dart';
+import 'package:file_saver/file_saver.dart';
 import 'package:flutter/material.dart';
 import 'package:get_storage/get_storage.dart';
 import 'package:open_file/open_file.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:project2proposal/screens/settings_screen.dart';
 import 'package:sanitize_filename/sanitize_filename.dart';
 import '../constants.dart' as app_colors;
 import '../models/proposal_details.dart';
+import '../utils/prompts.dart';
 import 'package:process_run/shell.dart';
 import 'package:ollama_dart/ollama_dart.dart';
-import 'package:process_run/shell.dart';
 import 'dart:async';
-import 'dart:convert';
 
 class GenerationStep {
   final String title;
   final Future<void> Function() execute;
+  final List<String> dependencies;
   String? feedback;
   bool requiresUserAction;
   String? userActionMessage;
   DateTime? startTime;
   Duration? duration;
+  bool isRunning = false;
+  bool isComplete = false;
 
   GenerationStep({
     required this.title,
     required this.execute,
+    this.dependencies = const [],
     this.feedback,
     this.requiresUserAction = false,
     this.userActionMessage,
@@ -33,7 +41,7 @@ class GenerationStep {
 
   String get durationText {
     if (startTime == null) return '';
-    final duration = this.duration ?? DateTime.now().difference(startTime!);
+    final duration = this.duration ?? DateTime.now().difference(startTime ?? DateTime.now());
     return '${duration.inSeconds}s';
   }
 }
@@ -58,7 +66,7 @@ class _ProposalGenerationScreenState extends State<ProposalGenerationScreen> {
   final Map<String,dynamic> proposalData = {
     'title': '',
     'abstract': '',
-    'origin': '',
+    'motivation': '',
     'researchProblem': '',
     'hypothesis': '',
     'objectives': '',
@@ -74,12 +82,20 @@ class _ProposalGenerationScreenState extends State<ProposalGenerationScreen> {
   Timer? _durationTimer;
   bool _isCancelled = false;
   Set<int> _completedSteps = {};
+  Map<String, Completer<void>> _stepCompletions = {};
+  Set<String> _runningSteps = {};
+  DateTime? _generationStartTime;
+  Duration? _totalGenerationTime;
 
   @override
   void initState() {
     super.initState();
-    _initializeSteps();
+   
+    _checkSettings();
+     _initializeSteps();
     _startGeneration();
+
+
   }
 
   @override
@@ -100,7 +116,8 @@ class _ProposalGenerationScreenState extends State<ProposalGenerationScreen> {
         return 'apa';
     }
   }
-
+final String base_url = 'https://md2pdf.krishaay.dev'; // 
+// final String base_url = 'http://localhost:45767';
 Future<  Map<String,dynamic>?> getProductData(String link,String bs_key) async {
     final String ep = "https://production-lon.browserless.io/chrome/bql";
     final Dio _dio = Dio();
@@ -174,10 +191,121 @@ Future<  Map<String,dynamic>?> getProductData(String link,String bs_key) async {
     }
   }
 
+
+
+
+  Future<String> _generateText(String prompt, {void Function(String)? onToken}) async {
+    final GetStorage storage = GetStorage();
+    final bool useOpenAI = storage.read('AI_PROVIDER') == 'openai';
+    
+    if (useOpenAI) {
+      return _generateWithOpenAI(prompt, onToken: onToken);
+    } else {
+      return _generateWithOllama(prompt, onToken: onToken);
+    }
+  }
+
+  Future<String> _generateWithOpenAI(String prompt, {void Function(String)? onToken}) async {
+    final userMessage = OpenAIChatCompletionChoiceMessageModel(
+      content: [
+        OpenAIChatCompletionChoiceMessageContentItemModel.text(
+          prompt,
+        ),
+      ],
+      role: OpenAIChatMessageRole.user,
+    );
+    final completer = Completer<String>();
+    String result = '';
+    
+    final chatStream = OpenAI.instance.chat.createStream(
+      model: "gpt-3.5-turbo",
+      messages: [
+        userMessage,
+      ],
+      seed: 423,
+    );
+    
+    chatStream.listen(
+      (streamChatCompletion) {
+        final content = streamChatCompletion.choices.first.delta.content;
+        if (content != null && content.isNotEmpty) {
+          if(content.first!.text != null) {
+          
+            result += content.first!.text ?? '';
+          
+          if(onToken != null) {
+            onToken(result);
+          }
+           } else {
+                  }
+        }
+      },
+      onDone: () {
+        completer.complete(result);
+      },
+      onError: (error) {
+        print('Error: $error'); 
+        completer.completeError(error);
+      },
+    );
+    
+    return completer.future;
+  }
+  Future<String> _generateWithOllama(String prompt, {void Function(String)? onToken}) async {
+    String result = '';
+    final stream = ollamaClient.generateCompletionStream(
+      request: GenerateCompletionRequest(
+        model: 'phi4:14b',
+        prompt: prompt,
+      ),
+    );
+    
+    await for (final res in stream) {
+      result += res.response ?? '';
+      if (onToken != null) {
+        onToken(result);
+      }
+    }
+    return result;
+  }
+
+  // Helper method to get the correct step index
+  int getStepIndex(String stepName) {
+    return steps.indexWhere((step) => step.title == stepName);
+  }
+
+  String _getTotalDuration() {
+    if (_totalGenerationTime != null) {
+      final minutes = _totalGenerationTime!.inMinutes;
+      final seconds = _totalGenerationTime!.inSeconds % 60;
+      return '$minutes min $seconds sec';
+    }
+    
+    Duration totalDuration = Duration.zero;
+    for (var step in steps) {
+      if (step.duration != null) {
+        totalDuration += step.duration!;
+      }
+    }
+    
+    final minutes = totalDuration.inMinutes;
+    final seconds = totalDuration.inSeconds % 60;
+    return '$minutes min $seconds sec';
+  }
+
   void _initializeSteps() {
+    final GetStorage storage = GetStorage();
+    final bool enableReferences = storage.read('ENABLE_REFERENCES') ?? true;
+    final bool enableBudget = storage.read('ENABLE_BUDGET') ?? true;
+    final bool useOpenAI = kIsWeb || storage.read('AI_PROVIDER') == 'openai';
+    if(useOpenAI) {
+      OpenAI.apiKey = storage.read('OPENAI_API_KEY');
+    }
+    
     steps = [
-      GenerationStep(
+      if (!useOpenAI) GenerationStep(
         title: 'Installing Ollama',
+        dependencies: [],
         userActionMessage: 'Please allow system permissions when prompted',
         execute: () async {
           var ollamaExec = whichSync('ollama');
@@ -190,8 +318,8 @@ Future<  Map<String,dynamic>?> getProductData(String link,String bs_key) async {
             }
             await Future.delayed(Duration(seconds: 3),);
             setState(() {
-            steps[0].feedback = 'Started Ollama';
-          });
+              steps[getStepIndex('Installing Ollama')].feedback = 'Started Ollama';
+            });
             
           } else {
             final Directory tempDir = await getTemporaryDirectory();
@@ -200,20 +328,20 @@ Future<  Map<String,dynamic>?> getProductData(String link,String bs_key) async {
             final Dio dio = Dio();
             print('Downloading Ollama in ${tempDir.path}');
             setState(() {
-              steps[0].feedback = 'Downloading Ollama: 0%';
+              steps[getStepIndex('Installing Ollama')].feedback = 'Downloading Ollama: 0%';
             });
             await dio.downloadUri(Uri.parse('https://ollama.com/download/OllamaSetup.exe'), tempDir.path+'/OllamaSetup.exe',onReceiveProgress: (count, total) => {
               setState(() {
-                steps[0].feedback = 'Downloading Ollama: ${((count / total) * 100).toStringAsFixed(2)}%';
+                steps[getStepIndex('Installing Ollama')].feedback = 'Downloading Ollama: ${((count / total) * 100).toStringAsFixed(2)}%';
               })
             },);
             setState(() {
-              steps[0].feedback = 'Downloaded Ollama.\nRunning Ollama Setup';
+              steps[getStepIndex('Installing Ollama')].feedback = 'Downloaded Ollama.\nRunning Ollama Setup';
             });
             shell.run('${tempDir.path}\\OllamaSetup.exe');
             
           } else if(Platform.isLinux) {
-            final Dio dio = Dio();
+           final Dio dio = Dio();
             print('Downloading Ollama in ${tempDir.path}');
             final shell = Shell(workingDirectory: tempDir.path);
             await dio.downloadUri(Uri.parse('https://ollama.com/install.sh'), tempDir.path+'/ollama.sh',onReceiveProgress: (count, total) => {
@@ -232,7 +360,7 @@ Future<  Map<String,dynamic>?> getProductData(String link,String bs_key) async {
             print(ollamaFile.path);
             if(ollamaFile.existsSync()) {
               setState(() {
-                steps[0].feedback = 'Ollama.app found but not on path.\nOpening App...';
+                steps[getStepIndex('Installing Ollama')].feedback = 'Ollama.app found but not on path.\nOpening App...';
               });
               try {
                 Shell().run('open /Applications/Ollama.app',);
@@ -244,26 +372,26 @@ Future<  Map<String,dynamic>?> getProductData(String link,String bs_key) async {
             
 
             setState(() {
-              steps[0].feedback = 'Downloading Ollama: 0%';
+              steps[getStepIndex('Installing Ollama')].feedback = 'Downloading Ollama: 0%';
             });
             await dio.downloadUri(Uri.parse('https://ollama.com/download/Ollama-darwin.zip'), tempDir.path+'/Ollama-darwin.zip',onReceiveProgress: (count, total) => {
               setState(() {
-                steps[0].feedback = 'Downloading Ollama: ${((count / total) * 100).toStringAsFixed(2)}%';
+                steps[getStepIndex('Installing Ollama')].feedback = 'Downloading Ollama: ${((count / total) * 100).toStringAsFixed(2)}%';
               })
             },);
             setState(() {
-              steps[0].feedback = 'Downloaded Ollama\nExtracting Ollama...';
+              steps[getStepIndex('Installing Ollama')].feedback = 'Downloaded Ollama\nExtracting Ollama...';
             });
             await shell.run('unzip Ollama-darwin.zip');
             setState(() {
-              steps[0].feedback = steps[0].feedback! + 'Done.\nCopying to /Applications. Please allow permissions when prompted';
+              steps[getStepIndex('Installing Ollama')].feedback = steps[getStepIndex('Installing Ollama')].feedback! + 'Done.\nCopying to /Applications. Please allow permissions when prompted';
             });
             await shell.run('mv Ollama.app /Applications/Ollama.app');
             await shell.run('rm Ollama-darwin.zip');
             await shell.run('open /Applications/Ollama.app --hide');
           }
           setState(() {
-            steps[0].feedback = 'Installed Ollama';
+            steps[getStepIndex('Installing Ollama')].feedback = 'Installed Ollama';
           });
           try {
             Shell().run('open /Applications/Ollama.app',);
@@ -276,8 +404,9 @@ Future<  Map<String,dynamic>?> getProductData(String link,String bs_key) async {
           
         },
       ),
-      GenerationStep(
+      if (!useOpenAI) GenerationStep(
         title: 'Downloading Model',
+        dependencies: ['Installing Ollama'],
         execute: () async {
           final res = await ollamaClient.listModels();
           print(res.models);
@@ -291,44 +420,44 @@ Future<  Map<String,dynamic>?> getProductData(String link,String bs_key) async {
                 switch(res.status){
                   case PullModelStatus.pullingManifest:
                     setState(() {
-                      steps[1].feedback = 'Pulling Manifest';
+                      steps[getStepIndex('Downloading Model')].feedback = 'Pulling Manifest';
                     });
                     break;
                   
                   case PullModelStatus.downloadingDigestname:
                     setState(() {
-                      steps[1].feedback = 'Downloading Digestname';
+                      steps[getStepIndex('Downloading Model')].feedback = 'Downloading Digestname';
                     });
                     break;
                   
                   case PullModelStatus.verifyingSha256Digest:
                     setState(() {
-                      steps[1].feedback = 'Verifying Sha256 Digest';
+                      steps[getStepIndex('Downloading Model')].feedback = 'Verifying Sha256 Digest';
                     });
                     break;
                   
                   case PullModelStatus.writingManifest:
                     setState(() {
-                      steps[1].feedback = 'Writing Manifest';
+                      steps[getStepIndex('Downloading Model')].feedback = 'Writing Manifest';
                     });
                     break;
                   
                   case PullModelStatus.removingAnyUnusedLayers:
                     setState(() {
-                      steps[1].feedback = 'Removing Any Unused Layers';
+                      steps[getStepIndex('Downloading Model')].feedback = 'Removing Any Unused Layers';
                     });
                     break;
                   
                   case PullModelStatus.success:
                     setState(() {
-                      steps[1].feedback = 'Model downloaded';
+                      steps[getStepIndex('Downloading Model')].feedback = 'Model downloaded';
                     });
                     break;
 
                   case null:
                     if(res.completed != null && res.total != null) {
                       setState(() {
-                        steps[1].feedback = 'Downloading Model: ${((res.completed! / res.total!) * 100).toStringAsFixed(2)}%';
+                        steps[getStepIndex('Downloading Model')].feedback = 'Downloading Model: ${((res.completed! / res.total!) * 100).toStringAsFixed(2)}%';
                       });
                     }
                     break;
@@ -339,163 +468,162 @@ Future<  Map<String,dynamic>?> getProductData(String link,String bs_key) async {
             
           } else {
             print('model already downloaded');
-            steps[1].feedback = 'Model already downloaded';
+            steps[getStepIndex('Downloading Model')].feedback = 'Model already downloaded';
           }
         },
       ),
-      GenerationStep(
+      if (!useOpenAI) GenerationStep(
         title: 'Loading Model',
+        dependencies: ['Downloading Model'],
         execute: () async {
           ollamaClient.generateCompletion(request: GenerateCompletionRequest(model: 'phi4:14b', prompt: 'what is the first whole number. only reply with the number'));
           setState(() {
-            steps[2].feedback = 'Model loaded';
+            steps[getStepIndex('Loading Model')].feedback = 'Model loaded';
           });
         },
       ),
       GenerationStep(
         title: 'Title',
+        dependencies: !useOpenAI ? ['Loading Model'] : [],
         execute: () async {
-          print('Generating title');
-          final titleStream = ollamaClient.generateCompletionStream(request: GenerateCompletionRequest(model: 'phi4:14b', prompt: 'Write a one-line title based on the description provided. Only respond with the title and nothing else.: ${widget.proposalDetails.projectDescription}'));
-          await for (final res in titleStream) {
-            proposalData['title'] += res.response ?? '';
-            setState(() {
-              steps[3].feedback = proposalData['title'];
-            });
-          }
-          if(proposalData['title'].contains('---')){
-            proposalData['title'] = proposalData['title'].split('---')[0];
-            setState(() {
-              steps[3].feedback = proposalData['title'];
-            });
-          }
-          if(proposalData['title'].contains('\n\n')){
-            proposalData['title'] = proposalData['title'].split('\n\n')[0];
-            setState(() {
-              steps[3].feedback = proposalData['title'];
-            });
-          }
+          proposalData['title'] = await _generateText(
+            Prompts.title(widget.proposalDetails.projectDescription),
+            onToken: (result) {
+              setState(() {
+                steps[getStepIndex('Title')].feedback = result;
+              });
+            }
+          );
+
+          proposalData['title'] = proposalData['title'].contains('---') ? proposalData['title'].split('---')[0].toString().trim() : proposalData['title'];
+          setState(() {
+            steps[getStepIndex('Title')].feedback = proposalData['title'];
+          });
         }
       ),
       GenerationStep(
         title: 'Abstract',
+        dependencies: !useOpenAI ? ['Loading Model'] : [],
         execute: () async {
-          print('Generating abstract');
-          final titleStream = ollamaClient.generateCompletionStream(request: GenerateCompletionRequest(model: 'phi4:14b', prompt: 'Write a 200-word abstract based on the description provided. Only respond with the abstract and nothing else.: ${widget.proposalDetails.projectDescription}'));
-          await for (final res in titleStream) {
-            proposalData['abstract'] += res.response ?? '';
-            setState(() {
-              steps[4].feedback = proposalData['abstract'];
-            });
-          }
+          proposalData['abstract'] = await _generateText(
+            Prompts.abstract(widget.proposalDetails.projectDescription),
+            onToken: (result) {
+              setState(() {
+                steps[getStepIndex('Abstract')].feedback = result;
+              });
+            }
+          );
         }
       ),
       GenerationStep(
         title: 'Motivation',
+        dependencies: !useOpenAI ? ['Loading Model'] : [],
         execute: () async {
           print('Generating motivation');
-          final titleStream = ollamaClient.generateCompletionStream(request: GenerateCompletionRequest(model: 'phi4:14b', prompt: 'Write a brief motivation for the project in 2-3 sentences based on the description provided. Only respond with the motivation and nothing else. : ${widget.proposalDetails.projectDescription}'));
-          await for (final res in titleStream) {
-            proposalData['origin'] += res.response ?? '';
-            setState(() {
-              steps[5].feedback = proposalData['origin'];
-            });
-          }
+          proposalData['motivation'] = await _generateText(
+            Prompts.motivation(widget.proposalDetails.projectDescription),
+            onToken: (result) {
+              setState(() {
+                steps[getStepIndex('Motivation')].feedback = result;
+              });
+            }
+          );
         }
       ),
       GenerationStep(
         title: 'Problem Statement',
+        dependencies: !useOpenAI ? ['Loading Model'] : [],
         execute: () async {
           print('Generating Problem Statement');
-          final titleStream = ollamaClient.generateCompletionStream(request: GenerateCompletionRequest(model: 'phi4:14b', prompt: 'Write a problem statement in 1-2 sentences based on the description provided. Only respond with the problem statement and nothing else. : ${widget.proposalDetails.projectDescription}'));
-          await for (final res in titleStream) {
-            proposalData['researchProblem'] += res.response ?? '';
-            setState(() {
-              steps[6].feedback = proposalData['researchProblem'];
-            });
-          }
+          proposalData['researchProblem'] = await _generateText(
+            Prompts.problemStatement(widget.proposalDetails.projectDescription),
+            onToken: (result) {
+              setState(() {
+                steps[getStepIndex('Problem Statement')].feedback = result;
+              });
+            }
+          );
         }
       ),
        GenerationStep(
         title: 'Research Hypothesis',
+        dependencies: !useOpenAI ? ['Loading Model'] : [],
         execute: () async {
           print('Generating Research Hypothesis');
-          final titleStream = ollamaClient.generateCompletionStream(request: GenerateCompletionRequest(model: 'phi4:14b', prompt: 'Write a 1-2 line hypothesis of the result based on the description provided. Only respond with the hypothesis and nothing else. : ${widget.proposalDetails.projectDescription}'));
-          await for (final res in titleStream) {
-            proposalData['hypothesis'] += res.response ?? '';
-            setState(() {
-              steps[7].feedback = proposalData['hypothesis'];
-            });
-          }
+          proposalData['hypothesis'] = await _generateText(
+            'Write a hypothesis based on the description provided. Only respond with the hypothesis and nothing else.: ${widget.proposalDetails.projectDescription}',
+            onToken: (result) {
+              setState(() {
+                steps[getStepIndex('Research Hypothesis')].feedback = result;
+              });
+            }
+          );
         }
       ),
       GenerationStep(
         title: 'Objectives',
+        dependencies: !useOpenAI ? ['Loading Model'] : [],
         execute: () async {
           print('Generating Objectives');
-          final titleStream = ollamaClient.generateCompletionStream(request: GenerateCompletionRequest(model: 'phi4:14b', prompt: 'Write a concise list of objectives (not more than 5) for the project each on a new line based on the description provided. Only respond with the numbered objectives and nothing else: ${widget.proposalDetails.projectDescription}'));
-          await for (final res in titleStream) {
-            proposalData['objectives'] += res.response ?? '';
-            setState(() {
-              steps[8].feedback = proposalData['objectives'];
-            });
-          }
+          proposalData['objectives'] = await _generateText(
+            'Write objectives based on the description provided. Only respond with the objectives and nothing else.: ${widget.proposalDetails.projectDescription}',
+            onToken: (result) {
+              setState(() {
+                steps[getStepIndex('Objectives')].feedback = result;
+              });
+            }
+          );
         }
       ),
       //TODO: integrate diagram generation at some point
        GenerationStep(
         title: 'Methodology',
+        dependencies: !useOpenAI ? ['Loading Model'] : [],
         execute: () async {
           print('Generating methodology');
-          final titleStream = ollamaClient.generateCompletionStream(request: GenerateCompletionRequest(model: 'phi4:14b', prompt: 'Write a detailed methodology for the project based on the description provided. Use multiple paragraphs as needed. Only respond with the methodology and nothing else.: ${widget.proposalDetails.projectDescription}'));
-          await for (final res in titleStream) {
-            proposalData['methodology'] += res.response ?? '';
-            setState(() {
-              steps[9].feedback = proposalData['methodology'];
-            });
-            
-          }
-          proposalData['methodology'] = proposalData['methodology'].replaceAll('### Methodology', '');
-          setState(() {
-              steps[9].feedback = proposalData['methodology'];
-            });
+          proposalData['methodology'] = await _generateText(
+            'Write a detailed methodology based on the description provided. Only respond with the methodology and nothing else.: ${widget.proposalDetails.projectDescription}',
+            onToken: (result) {
+              setState(() {
+                steps[getStepIndex('Methodology')].feedback = result;
+              });
+            }
+          );
         }
       ),
        GenerationStep(
         title: 'Outcomes',
+        dependencies: !useOpenAI ? ['Loading Model'] : [],
         execute: () async {
           print('Generating outcomes');
-          final titleStream = ollamaClient.generateCompletionStream(request: GenerateCompletionRequest(model: 'phi4:14b', prompt:  'Write the final goal for the project in 1-2 sentences at the most based on the description provided. Only respond with the final goal and nothing else.: ${widget.proposalDetails.projectDescription}'));
-          await for (final res in titleStream) {
-            proposalData['studyEndPoints'] += res.response ?? '';
-            setState(() {
-              steps[10].feedback = proposalData['studyEndPoints'];
-            });
-          }
+          proposalData['studyEndPoints'] = await _generateText(
+            'Write the final goal for the project in 1-2 sentences at the most based on the description provided. Only respond with the final goal and nothing else.: ${widget.proposalDetails.projectDescription}',
+            onToken: (result) {
+              setState(() {
+                steps[getStepIndex('Outcomes')].feedback = result;
+              });
+            }
+          );
         }
       ),      
       GenerationStep(
         title: 'Timeline',
+        dependencies: !useOpenAI ? ['Loading Model'] : [],
         execute: () async {
           print('Generating timeline');
-          final date = DateTime.now();
-          
-          final titleStream = ollamaClient.generateCompletionStream(request: GenerateCompletionRequest(model: 'phi4:14b', prompt:  'Write a timeline for the project as a table with the task and the deadline for each task. Today is ${date.day}/${date.month}/${date.year}. Only respond with the table in markdown format and nothing else: ${widget.proposalDetails.projectDescription}'));
-          await for (final res in titleStream) {
-            proposalData['timeline'] += res.response ?? '';
-            setState(() {
-              steps[11].feedback = proposalData['timeline'];
-            });
-          }
-          proposalData['timeline'] = proposalData['timeline'].replaceAll('```markdown\n','').split('\n```')[0];
-          print(proposalData['timeline']);
-          setState(() {
-              steps[11].feedback = proposalData['timeline'];
-          });
+          proposalData['timeline'] = await _generateText(
+            'Write a timeline for the project based on the description provided. Only respond with the timeline and nothing else.: ${widget.proposalDetails.projectDescription}',
+            onToken: (result) {
+              setState(() {
+                steps[getStepIndex('Timeline')].feedback = result;
+              });
+            }
+          );
         }
       ),
-      GenerationStep(
+      if (enableReferences) GenerationStep(
         title: 'Finding References',
+        dependencies: ['Title', 'Abstract', 'Problem Statement'],
         execute: () async {
           // Your proposal generation code here
           print('Finding references');
@@ -506,7 +634,7 @@ Future<  Map<String,dynamic>?> getProductData(String link,String bs_key) async {
           print("SERP KEY: $serpAPIKey");
           if(serpAPIKey == null) {
             setState(() {
-              steps[12].feedback = 'Skipping references as SERP API Key is not set';
+              steps[getStepIndex('Finding References')].feedback = 'Skipping references as SERP API Key is not set';
             });
             return;
           }
@@ -515,12 +643,12 @@ Future<  Map<String,dynamic>?> getProductData(String link,String bs_key) async {
           await for (final res in titleStream) {
             searchQuery += res.response ?? '';
             setState(() {
-              steps[12].feedback = "Search Term: $searchQuery\n";
+              steps[getStepIndex('Finding References')].feedback = "Search Term: $searchQuery\n";
             });
           }
           searchQuery = searchQuery.replaceAll('`', '');
           setState(() {
-            steps[12].feedback = 'Search Term: "$searchQuery"\n';
+            steps[getStepIndex('Finding References')].feedback = 'Search Term: "$searchQuery"\n';
           });
           if(searchQuery.contains('---')){
             searchQuery = searchQuery.split('---')[0];
@@ -530,7 +658,7 @@ Future<  Map<String,dynamic>?> getProductData(String link,String bs_key) async {
           }
           searchQuery = searchQuery.trim();
           setState(() {
-            steps[12].feedback = 'Search Term: "$searchQuery"\n';
+            steps[getStepIndex('Finding References')].feedback = 'Search Term: "$searchQuery"\n';
           });
           // load api key
           
@@ -551,13 +679,13 @@ Future<  Map<String,dynamic>?> getProductData(String link,String bs_key) async {
           final data = response.data as Map<String, dynamic>;
           if (data['organic_results'] == null) {
             setState(() {
-              steps[12].feedback = (steps[12].feedback ?? '') + '\nSearch didn\'t return any results. Proceeding..';
+              steps[getStepIndex('Finding References')].feedback = (steps[getStepIndex('Finding References')].feedback ?? '') + '\nSearch didn\'t return any results. Proceeding..';
             });
             return;
           }
           final results = data['organic_results'] as List<dynamic>;
           setState(() {
-            steps[12].feedback = (steps[12].feedback ?? '') + '\nSearch returned ${results.length} results';
+            steps[getStepIndex('Finding References')].feedback = (steps[getStepIndex('Finding References')].feedback ?? '') + '\nSearch returned ${results.length} results';
           });
           final resultsFiltered = [];
           for (final element in results) {
@@ -594,7 +722,7 @@ Future<  Map<String,dynamic>?> getProductData(String link,String bs_key) async {
               result['citation_style'] = citations[0]['style'];
             }
             setState(() {
-              steps[12].feedback = (steps[12].feedback ?? '') + '\n\n' + result['citation'];
+              steps[getStepIndex('Finding References')].feedback = (steps[getStepIndex('Finding References')].feedback ?? '') + '\n\n' + result['citation'];
             });
             
           }
@@ -603,119 +731,127 @@ Future<  Map<String,dynamic>?> getProductData(String link,String bs_key) async {
          
         },
       ),
-      GenerationStep(title: "Budget", execute: () async {
-        final List<String> budgetLinks = widget.proposalDetails.hardwareLinks;
-        final Dio dio = Dio();
-        final GetStorage storage = GetStorage();
-        final String? bs_key = storage.read('BROWSERLESS_API_KEY');
-        if(bs_key == null) {
-          setState(() {
-            steps[13].feedback = 'Skipping budget as Browserless API Key is not set';
-          });
-          return;
-        }
-        final List<String> toBeScrapedWithAI = [];
-        for(final link in budgetLinks) {
-          final productData = await getProductData(link,bs_key);
-          if(productData == null) {
-            toBeScrapedWithAI.add(link);
-            continue;
-          }
-          proposalData['budget'].add(productData);
-          setState(() {
-            steps[13].feedback = (steps[13].feedback ?? '') + '\n\n\nTitle: ${productData['name']}\nPrice: ${productData['price']}';
-          });
-        }
-        if (toBeScrapedWithAI.isEmpty) {
-          return;
-        }
-        setState(() {
-          steps[13].feedback = (steps[13].feedback ?? '') + '\nScraping Pending Links:\n${toBeScrapedWithAI.join('\n')}';
-        });
-
-        try {
-          // Start scraping task
-          final Response r = await dio.postUri(
-            Uri.parse('https://md2pdf.krishaay.dev/scrape_info'),
-            data: {'links': toBeScrapedWithAI,
-            'openAIKey': storage.read('OPENAI_API_KEY'),
-            'browserless_token': bs_key,
-            },
-          );
-          
-          if (r.statusCode != 200) {
+      if (enableBudget) GenerationStep(
+        title: 'Budget',
+        dependencies: [],
+        execute: () async {
+          final List<String> budgetLinks = widget.proposalDetails.hardwareLinks;
+          final Dio dio = Dio();
+          final GetStorage storage = GetStorage();
+          final String? bs_key = storage.read('BROWSERLESS_API_KEY');
+          if(bs_key == null) {
             setState(() {
-              steps[13].feedback = (steps[13].feedback ?? '') + '\n\nError starting scraping task';
+              steps[getStepIndex('Budget')].feedback = 'Skipping budget as Browserless API Key is not set';
             });
             return;
           }
-          
-          final String taskId = (r.data as Map<String, dynamic>)['task_id'];
-          
-          // Poll for results
-          while (true) {
-            final Response statusResponse = await dio.getUri(
-              Uri.parse('https://md2pdf.krishaay.dev/scrape_status/$taskId'),
-              options: Options(
-              validateStatus: (status) {
-                return status == 200 || status == 404;
-              },)
-            );
-            
-            if (statusResponse.statusCode == 404) {
-              setState(() {
-                steps[13].feedback = (steps[13].feedback ?? '') + '\n\nTask not found';
-              });
-              break;
-            }
-            
-            final Map<String, dynamic> status = statusResponse.data;
-            
-            if (status['status'] == 'in_progress') {
-              // Wait before next poll
-              await Future.delayed(Duration(seconds: 3));
+          final List<String> toBeScrapedWithAI = [];
+          for(final link in budgetLinks) {
+            final productData = await getProductData(link,bs_key);
+            if(productData == null) {
+              toBeScrapedWithAI.add(link);
               continue;
             }
-            
-            if (status['status'] == 'complete') {
-              final List<dynamic> results = status['results'];
-              for (final result in results) {
-                proposalData['budget'].add(result);
-                setState(() {
-                  steps[13].feedback = (steps[13].feedback ?? '') + 
-                    '\n\n\nTitle: ${result['name']}\nPrice: ${result['price']}';
-                });
-              }
-              break;
-            }
-            
-            if (status['status'] == 'error') {
-              setState(() {
-                steps[13].feedback = (steps[13].feedback ?? '') + 
-                  '\n\nError scraping: ${status['error']}';
-              });
-              break;
-            }
+            proposalData['budget'].add(productData);
+            setState(() {
+              steps[getStepIndex('Budget')].feedback = (steps[getStepIndex('Budget')].feedback ?? '') + '\n\n\nTitle: ${productData['name']}\nPrice: ${productData['price']}';
+            });
           }
-        } catch (e) {
+          if (toBeScrapedWithAI.isEmpty) {
+            return;
+          }
           setState(() {
-            steps[13].feedback = (steps[13].feedback ?? '') + '\n\nError: $e';
+            steps[getStepIndex('Budget')].feedback = (steps[getStepIndex('Budget')].feedback ?? '') + '\nScraping Pending Links:\n${toBeScrapedWithAI.join('\n')}';
           });
-        }
-      }),
+
+          try {
+            // Start scraping task
+            final Response r = await dio.postUri(
+              Uri.parse('$base_url/scrape_info'),
+              data: {'links': toBeScrapedWithAI,
+              'openAIKey': storage.read('OPENAI_API_KEY'),
+              'browserless_token': bs_key,
+              },
+            );
+            
+            if (r.statusCode != 200) {
+              setState(() {
+                steps[getStepIndex('Budget')].feedback = (steps[getStepIndex('Budget')].feedback ?? '') + '\n\nError starting scraping task';
+              });
+              return;
+            }
+            
+            final String taskId = (r.data as Map<String, dynamic>)['task_id'];
+            
+            // Poll for results
+            while (true) {
+              final Response statusResponse = await dio.getUri(
+                Uri.parse('$base_url/scrape_status/$taskId'),
+                options: Options(
+                validateStatus: (status) {
+                  return status == 200 || status == 404;
+                },)
+              );
+              
+              if (statusResponse.statusCode == 404) {
+                setState(() {
+                  steps[getStepIndex('Budget')].feedback = (steps[getStepIndex('Budget')].feedback ?? '') + '\n\nTask not found';
+                });
+                break;
+              }
+              
+              final Map<String, dynamic> status = statusResponse.data;
+              
+              if (status['status'] == 'in_progress') {
+                // Wait before next poll
+                await Future.delayed(Duration(seconds: 3));
+                continue;
+              }
+              
+              if (status['status'] == 'complete') {
+                final List<dynamic> results = status['results'];
+                for (final result in results) {
+                  proposalData['budget'].add(result);
+                  setState(() {
+                    steps[getStepIndex('Budget')].feedback = (steps[getStepIndex('Budget')].feedback ?? '') + 
+                      '\n\n\nTitle: ${result['name']}\nPrice: ${result['price']}';
+                  });
+                }
+                break;
+              }
+              
+              if (status['status'] == 'error') {
+                setState(() {
+                  steps[getStepIndex('Budget')].feedback = (steps[getStepIndex('Budget')].feedback ?? '') + 
+                    '\n\nError scraping: ${status['error']}';
+                });
+                break;
+              }
+            }
+          } catch (e) {
+            setState(() {
+              steps[getStepIndex('Budget')].feedback = (steps[getStepIndex('Budget')].feedback ?? '') + '\n\nError: $e';
+            });
+          }
+        }),
       GenerationStep(
         title: 'Export to PDF',
+        dependencies: [
+          'Title', 'Abstract', 'Motivation', 'Problem Statement', 
+          'Research Hypothesis', 'Objectives', 'Methodology', 'Outcomes', 'Timeline',
+          if (enableReferences) 'Finding References',
+          if (enableBudget) 'Budget'
+        ],
         execute: () async {
-          final Directory? downloadsDirectory = await getDownloadsDirectory();
-          steps[14].feedback = 'PDFs can take up to a minute to generate depending on server status. Please be patient.';
+          steps[getStepIndex('Export to PDF')].feedback = 'PDFs can take up to a minute to generate depending on server status. Please be patient.';
           final String markdownContent = 
           '''
 # Title
 ${proposalData['title']}
 # Abstract
 ${proposalData['abstract']}
-# Origin
-${proposalData['origin']}
+# Motivation
+${proposalData['motivation']}
 # Problem Statement
 ${proposalData['researchProblem']}
 # Hypothesis
@@ -726,17 +862,18 @@ ${proposalData['objectives']}
 ${proposalData['methodology']}
 # Study End Point
 ${proposalData['studyEndPoints']}
+${enableBudget ? '''
 # Budget
 | Name | Price | 
 | --- | --- | 
 ${proposalData['budget'].map((e) => '| ${e['name']} | ${e['price']} |').join('\n')}
-
+''' : ''}
 # Timeline
-
 ${proposalData['timeline']}
-
+${enableReferences ? '''
 # References
 ${proposalData['references'].map((e) => e['citation']).join('\n\n')}
+''' : ''}
 ''';      
 
           try{
@@ -746,11 +883,17 @@ ${proposalData['references'].map((e) => e['citation']).join('\n\n')}
           },options: Options(
             responseType: ResponseType.bytes
           ));
-          String santizedTitle = sanitizeFilename(proposalData['title']+'.pdf');
-          final savePath = '${downloadsDirectory!.path}/$santizedTitle';
-          File(savePath).writeAsBytesSync(response.data as List<int>);
-          steps[14].feedback = 'Saved to: $savePath';
-          steps[15].feedback = savePath;
+          String santizedTitle = sanitizeFilename(proposalData['title']);
+
+          final String sPath = await FileSaver.instance.saveAs(name: santizedTitle, ext: 'pdf', mimeType: MimeType.pdf,
+          bytes: Uint8List.fromList(response.data as List<int>),
+          dioClient: dio,
+
+          ) ?? '';
+
+          // final savePath = '${downloadsDirectory!.path}/$santizedTitle';
+          // File(savePath).writeAsBytesSync(response.data as List<int>);
+          steps[getStepIndex('Export to PDF')].feedback = 'Saved to downloads folder: $santizedTitle.pdf';
           } catch (e) {
             throw e;
           }
@@ -782,12 +925,26 @@ ${proposalData['references'].map((e) => e['citation']).join('\n\n')}
       ),
       GenerationStep(
         title: 'Proposal Complete',
+        dependencies: ['Export to PDF'],
         execute: () async {
-          OpenFile.open(steps[15].feedback!,type: 'application/pdf');
-          steps[15].feedback = 'Opened PDF';
+          final String pdfPath = steps[getStepIndex('Export to PDF')+1].feedback!;
+          
+          final String totalTime = _getTotalDuration();
+          
+          setState(() {
+            steps[getStepIndex('Proposal Complete')].feedback = 
+              'Your proposal is ready! You can find it at: $pdfPath\n\n' +
+              'Total generation time: $totalTime' +
+              (_totalGenerationTime != null ? ' (wall clock)' : ' (sum of steps)');
+          });
+          
+          if(pdfPath.isNotEmpty){
+            OpenFile.open(pdfPath);
+          }
+          
         },
       ),
-    ];
+    ].where((step) => step != null).toList(); // Remove null steps
     
     _stepErrors = List.filled(steps.length, '');
   }
@@ -796,98 +953,274 @@ ${proposalData['references'].map((e) => e['citation']).join('\n\n')}
     setState(() {
       _isCancelled = true;
       _isProcessing = false;
-      _durationTimer?.cancel();
-      _stepErrors[_currentStep] = 'Generation cancelled';
+      if (_generationStartTime != null) {
+        _totalGenerationTime = DateTime.now().difference(_generationStartTime!);
+      }
     });
+    _durationTimer?.cancel();
   }
 
   Future<void> _startGeneration() async {
     if (_isProcessing) return;
     _isProcessing = true;
     _isCancelled = false;
-
-    for (int i = 0; i < steps.length - 1; i++) {
-      if (!mounted || _isCancelled) return;
+    _generationStartTime = DateTime.now();
+    
+    final GetStorage storage = GetStorage();
+    final bool useParallel = storage.read('GENERATION_MODE') == 'parallel';
+    final bool useOpenAI = storage.read('AI_PROVIDER') == 'openai';
+    
+    if (useOpenAI || useParallel) {
+      await _startParallelGeneration();
+    } else {
+      await _startSequentialGeneration();
+    }
+    
+    if (_generationStartTime != null) {
+      _totalGenerationTime = DateTime.now().difference(_generationStartTime!);
+    }
+    _isProcessing = false;
+  }
+  
+  Future<void> _startParallelGeneration() async {
+    // Initialize completers for each step
+    _stepCompletions = {
+      for (var step in steps) step.title: Completer<void>()
+    };
+    
+    // Start all steps that have no dependencies
+    for (int i = 0; i < steps.length; i++) {
+      if (steps[i].dependencies.isEmpty && !steps[i].requiresUserAction) {
+        _executeStep(i);
+      }
+    }
+    
+    // Wait for all steps to complete
+    try {
+      await Future.wait(_stepCompletions.values.map((c) => c.future));
+      _durationTimer?.cancel();
+      setState(() {
+        _currentStep = steps.length - 1;
+        if (_generationStartTime != null) {
+          _totalGenerationTime = DateTime.now().difference(_generationStartTime!);
+        }
+      });
+    } catch (e) {
+      print('Error in parallel execution: $e');
+    }
+  }
+  
+  Future<void> _startSequentialGeneration() async {
+    _currentStep = 0;
+    
+    for (int i = 0; i < steps.length; i++) {
+      if (_isCancelled) break;
       
       setState(() {
         _currentStep = i;
-        _waitingForUser = false;
         steps[i].startTime = DateTime.now();
       });
-
-      // Start timer to update duration
-      _durationTimer?.cancel();
-      _durationTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-        if (mounted) setState(() {});
-      });
-
+      
+      if (_durationTimer == null || !_durationTimer!.isActive) {
+        _durationTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+          if (mounted) setState(() {});
+        });
+      }
+      
       try {
         if (steps[i].requiresUserAction) {
           setState(() {
             _waitingForUser = true;
           });
-          return;
+          return; // Will be continued by user action
         }
         
         await steps[i].execute();
         
         setState(() {
           steps[i].duration = DateTime.now().difference(steps[i].startTime!);
+          steps[i].isComplete = true;
           _completedSteps.add(i);
-          if (i < steps.length - 2) {
-            _currentStep = i + 1;
-          }
         });
       } catch (e) {
         setState(() {
           _stepErrors[i] = e.toString();
         });
-        _isProcessing = false;
-        return;
+        break;
       }
     }
-
+    
     _durationTimer?.cancel();
-    setState(() {
-      _currentStep = steps.length - 1;
-    });
-    _isProcessing = false;
   }
 
-  Future<void> _rerunStep(int index) async {
-    if (_isProcessing) return;
+  Future<void> _executeStep(int index) async {
+    if (!mounted || _isCancelled) return;
     
+    final step = steps[index];
+    
+    // Check if all dependencies are complete
+    for (final dep in step.dependencies) {
+      if (!_stepCompletions[dep]!.isCompleted) {
+        // Wait for dependency to complete
+        await _stepCompletions[dep]!.future;
+      }
+    }
+   
+    
+    // Check if step is already complete or running
+    if (step.isComplete || step.isRunning) {
+      return;
+    }
+    
+    // Start executing this step
+
     setState(() {
-      steps[index].feedback = null;
-      steps[index].startTime = DateTime.now();
-      _stepErrors[index] = '';
+      step.isRunning = true;
+      step.startTime = DateTime.now();
+      _runningSteps.add(step.title);
     });
     
-    try {
-      await steps[index].execute();
-      setState(() {
-        steps[index].duration = DateTime.now().difference(steps[index].startTime!);
+    // Start timer to update duration
+
+    if (_durationTimer == null || !_durationTimer!.isActive) {
+      _durationTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) setState(() {});
       });
+    }
+    
+    try {
+      if (step.requiresUserAction) {
+        setState(() {
+          _waitingForUser = true;
+          _currentStep = index;
+        });
+        return; // Will be continued by user action
+      }
+      
+      await step.execute();
+      
+      setState(() {
+        step.duration = DateTime.now().difference(step.startTime ?? DateTime.now());
+        step.isRunning = false;
+        step.isComplete = true;
+        _completedSteps.add(index);
+        _runningSteps.remove(step.title);
+      });
+      
+  
+      // Mark this step as complete
+      if (!_stepCompletions[step.title]!.isCompleted) {
+        _stepCompletions[step.title]!.complete();
+      }
+      
+
+      // Start any steps that depend on this one
+      for (int i = 0; i < steps.length; i++) {
+
+        if (steps[i].dependencies.contains(step.title) && !steps[i].isRunning && !steps[i].isComplete) {
+          // Check if all dependencies are now complete
+          bool canStart = true;
+          for (final dep in steps[i].dependencies) {
+            if(!_stepCompletions.containsKey(dep)) {
+              print('${dep} not found');
+              canStart = false;
+              break;
+            }
+            if (!_stepCompletions[dep]!.isCompleted) {
+              canStart = false;
+              break;
+            }
+          }
+          
+          if (canStart) {
+   
+            _executeStep(i);
+          }
+        }
+      }
     } catch (e) {
+
+
       setState(() {
         _stepErrors[index] = e.toString();
+        step.isRunning = false;
+        _runningSteps.remove(step.title);
       });
+      if (!_stepCompletions[step.title]!.isCompleted) {
+        _stepCompletions[step.title]!.completeError(e);
+      }
     }
   }
 
   void continueExecution() {
     if (_waitingForUser) {
       _waitingForUser = false;
-      steps[_currentStep].execute().then((_) {
-        setState(() {
-          // Refresh to show feedback
+      final GetStorage storage = GetStorage();
+      final bool useParallel = storage.read('GENERATION_MODE') == 'parallel';
+      final bool useOpenAI = storage.read('AI_PROVIDER') == 'openai';
+      
+      if (useOpenAI || useParallel) {
+        final int index = _currentStep;
+        final step = steps[index];
+        
+        step.execute().then((_) {
+          setState(() {
+            step.duration = DateTime.now().difference(step.startTime!);
+            step.isRunning = false;
+            step.isComplete = true;
+            _completedSteps.add(index);
+            _runningSteps.remove(step.title);
+          });
+          
+          // Mark this step as complete
+          if (!_stepCompletions[step.title]!.isCompleted) {
+            _stepCompletions[step.title]!.complete();
+          }
+          
+          // Start any steps that depend on this one
+          for (int i = 0; i < steps.length; i++) {
+            if (steps[i].dependencies.contains(step.title) && 
+                !steps[i].isRunning && 
+                !steps[i].isComplete) {
+              // Check if all dependencies are now complete
+              bool canStart = true;
+              for (final dep in steps[i].dependencies) {
+                if (!_stepCompletions[dep]!.isCompleted) {
+                  canStart = false;
+                  break;
+                }
+              }
+              
+              if (canStart) {
+                _executeStep(i);
+              }
+            }
+          }
+        }).catchError((e) {
+          setState(() {
+            _stepErrors[_currentStep] = e.toString();
+            step.isRunning = false;
+            _runningSteps.remove(step.title);
+          });
+          if (!_stepCompletions[step.title]!.isCompleted) {
+            _stepCompletions[step.title]!.completeError(e);
+          }
         });
-        _startGeneration(); // Continue with next steps
-      }).catchError((e) {
-        setState(() {
-          _stepErrors[_currentStep] = e.toString();
+      } else {
+        // Sequential mode
+        steps[_currentStep].execute().then((_) {
+          setState(() {
+            steps[_currentStep].duration = DateTime.now().difference(steps[_currentStep].startTime!);
+            steps[_currentStep].isComplete = true;
+            _completedSteps.add(_currentStep);
+          });
+          _startSequentialGeneration(); // Continue with next steps
+        }).catchError((e) {
+          setState(() {
+            _stepErrors[_currentStep] = e.toString();
+          });
         });
-      });
+      }
     }
   }
 
@@ -895,10 +1228,10 @@ ${proposalData['references'].map((e) => e['citation']).join('\n\n')}
     if (_stepErrors[step].isNotEmpty) {
       return StepState.error;
     }
-    if (step < _currentStep || (step == steps.length - 1 && _currentStep == steps.length - 1)) {
+    if (steps[step].isComplete) {
       return StepState.complete;
     }
-    if (step == _currentStep) {
+    if (steps[step].isRunning) {
       return StepState.editing;
     }
     return StepState.indexed;
@@ -912,6 +1245,41 @@ ${proposalData['references'].map((e) => e['citation']).join('\n\n')}
         _collapsedSteps.add(index);
       }
     });
+  }
+
+  void _checkSettings() async {
+    final GetStorage storage = GetStorage();
+    final bool hasOpenAIKey = storage.read('OPENAI_API_KEY') != null;
+    final bool hasSerpAPIKey = storage.read('SERP_API_KEY') != null;
+    final bool hasBrowserlessKey = storage.read('BROWSERLESS_API_KEY') != null;
+    final bool enableReferences = storage.read('ENABLE_REFERENCES') ?? true;
+    final bool enableBudget = storage.read('ENABLE_BUDGET') ?? true;
+
+    bool needsSettings = false;
+    
+    // Check if OpenAI key is needed (required for both references and budget)
+    if (!hasOpenAIKey && (enableReferences || enableBudget)) {
+      needsSettings = true;
+    }
+    
+    // Check if SERP API key is needed
+    if (!hasSerpAPIKey && enableReferences) {
+      needsSettings = true;
+    }
+    
+    // Check if Browserless key is needed
+    if (!hasBrowserlessKey && enableBudget) {
+      needsSettings = true;
+    }
+
+    if (needsSettings) {
+      await showDialog(
+        context: context,
+        builder: (context) => const SettingsDialog(),
+      );
+    }
+
+    
   }
 
   @override
@@ -936,6 +1304,7 @@ ${proposalData['references'].map((e) => e['citation']).join('\n\n')}
               tooltip: 'Cancel Generation',
               onPressed: _cancelGeneration,
             ),
+         
         ],
       ),
       
@@ -1007,7 +1376,7 @@ ${proposalData['references'].map((e) => e['citation']).join('\n\n')}
                           IconButton(
                             icon: const Icon(Icons.refresh),
                             tooltip: 'Regenerate this section',
-                            onPressed: () => _rerunStep(index),
+                            onPressed: () => _executeStep(index),
                             iconSize: 20,
                             color: app_colors.primary,
                           ),

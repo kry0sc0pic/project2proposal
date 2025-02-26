@@ -1,28 +1,34 @@
-from markdown_pdf import MarkdownPdf, Section
-import os
-from flask import Flask, send_file, request
-import io
+from langchain_openai import ChatOpenAI
+from browser_use import Agent
+import asyncio
+from dotenv import load_dotenv
+import json
+load_dotenv()
 
-app = Flask(__name__)
+async def main():
+    agent = Agent(
+        task="Go to https://evelta.com/2805-140kv-gimbal-brushless-motor-for-3-axis-camera-gimbal/ and find the name and price of the product as json object. only give the after tax price.",
+        llm=ChatOpenAI(model="gpt-4o",api_key="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"),
+        generate_gif=False,
 
-@app.route('/md2pdf', methods=['POST'])
-def make_pdf():
-    # Get the uploaded file from the request
-    markdown_content = request.get_json()['markdown']
-    pdf = MarkdownPdf()
-    pdf.add_section(section=Section(markdown_content,toc=False))
-    pdf.meta["title"] = "Proposal"
-    pdf.meta["author"] = "Project2Proposal"
-    # Create an in-memory bytes buffer to store the PDF
-    pdf.save('temp.pdf')
-    pdf_buffer = open('temp.pdf', 'rb')
-    
-    return send_file(
-        pdf_buffer,
-        mimetype='application/pdf',
-        as_attachment=True,
-        download_name='converted.pdf'
     )
+    result = await agent.run()
+    try:
+        result = json.loads(result)
+        print(result)
+    except Exception as e:
+        print(result)
+        corrected_op = agent.llm.invoke("Make the json object valid: "+result).content
+        print(corrected_op)
+        try:
+            corrected_op = json.loads(corrected_op)
+            print(corrected_op)
+        except Exception as e:
+            print(corrected_op)
+            print("Could not convert to json object")
+            print("Error:",e)
+            print("Please try again")
+            return
 
-if __name__ == '__main__':
-    app.run(port=os.environ.get('PORT',45767),)
+
+asyncio.run(main())

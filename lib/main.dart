@@ -4,11 +4,15 @@ import 'package:project2proposal/screens/settings_screen.dart';
 import 'constants.dart' as app_colors;
 import 'screens/proposal_generation_screen.dart';
 import 'models/proposal_details.dart';
-
-
+// import 'package:appwrite/appwrite.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  // Client client = Client();
+  // client.
+  //   setProject('67b2c34b0023fa9dbd30')
+  //   .setEndpoint('https://project2proposal.krishaay.dev');
+  
   final GetStorage storage = GetStorage();
   storage.getKeys();
   runApp(const ProposalApp());
@@ -19,7 +23,6 @@ class ProposalApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    
     return MaterialApp(
       title: 'Proposal Generator',
       debugShowCheckedModeBanner: false,
@@ -93,12 +96,10 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
         title: const Text('Project Details'),
         actions: [
           IconButton(
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => const SettingsScreen(),
-                ),
+            onPressed: () async {
+              await showDialog(
+                context: context,
+                builder: (context) => const SettingsDialog(),
               );
             },
             icon: const Icon(Icons.settings),

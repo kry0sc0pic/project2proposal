@@ -1,2 +1,4 @@
 markdown_pdf
 flask
+browser-use
+flask_cors
