@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
+import 'dart:io' show Platform;
 import '../constants.dart' as app_colors;
 import 'package:get_storage/get_storage.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -21,6 +22,12 @@ enum GenerationMode {
   parallel,
 }
 
+// Helper to check if platform supports Ollama
+bool get _platformSupportsOllama {
+  if (kIsWeb) return false;
+  return Platform.isWindows || Platform.isLinux || Platform.isMacOS;
+}
+
 class SettingsDialog extends StatefulWidget {
   const SettingsDialog({super.key});
 
@@ -36,8 +43,8 @@ class _SettingsDialogState extends State<SettingsDialog> {
   late CitationStyle _selectedStyle;
   late AIProvider _selectedAIProvider;
   late GenerationMode _generationMode;
-  bool _enableReferences = true;
-  bool _enableBudget = true;
+  bool _enableReferences = false;
+  bool _enableBudget = false;
 
   void _saveSettings() async {
     await storage.write('SERP_API_KEY', _serpAPIController.text);
@@ -56,13 +63,13 @@ class _SettingsDialogState extends State<SettingsDialog> {
     _serpAPIController.text = storage.read('SERP_API_KEY') ?? '';
     _browserlessAPIController.text = storage.read('BROWSERLESS_API_KEY') ?? '';
     _openAIController.text = storage.read('OPENAI_API_KEY') ?? '';
-    _enableReferences = storage.read('ENABLE_REFERENCES') ?? true;
-    _enableBudget = storage.read('ENABLE_BUDGET') ?? true;
+    _enableReferences = storage.read('ENABLE_REFERENCES') ?? false;
+    _enableBudget = storage.read('ENABLE_BUDGET') ?? false;
     _selectedStyle = CitationStyle.values.firstWhere(
       (style) => style.name == (storage.read('CITATION_STYLE') ?? 'apa'),
       orElse: () => CitationStyle.apa,
     );
-    if (kIsWeb) {
+    if (!_platformSupportsOllama) {
       _selectedAIProvider = AIProvider.openai;
       storage.write('AI_PROVIDER', 'openai');
     } else {
@@ -192,87 +199,58 @@ class _SettingsDialogState extends State<SettingsDialog> {
                                 ),
                               ),
                               const SizedBox(height: 8),
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.start,
-                                children: [
-                                  Radio<CitationStyle>(
+                              DropdownButtonFormField<CitationStyle>(
+                                value: _selectedStyle,
+                                decoration: InputDecoration(
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(8),
+                                    borderSide: BorderSide(color: app_colors.neutral),
+                                  ),
+                                  enabledBorder: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(8),
+                                    borderSide: BorderSide(color: app_colors.neutral),
+                                  ),
+                                  focusedBorder: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(8),
+                                    borderSide: BorderSide(color: app_colors.primary),
+                                  ),
+                                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                                ),
+                                style: app_colors.martianMonoTextStyle.copyWith(
+                                  color: app_colors.primary,
+                                ),
+                                dropdownColor: app_colors.background,
+                                items: [
+                                  DropdownMenuItem(
                                     value: CitationStyle.apa,
-                                    groupValue: _selectedStyle,
-                                    fillColor: MaterialStateProperty.resolveWith(
-                                      (states) => states.contains(MaterialState.selected)
-                                          ? app_colors.primary
-                                          : app_colors.neutral,
-                                    ),
-                                    onChanged: (CitationStyle? value) {
-                                      if (value != null) {
-                                        setState(() {
-                                          _selectedStyle = value;
-                                          _saveSettings();
-                                        });
-                                      }
-                                    },
-                                  ),
-                                  Text(
-                                    'APA',
-                                    style: app_colors.martianMonoTextStyle.copyWith(
-                                      color: _selectedStyle == CitationStyle.apa 
-                                          ? app_colors.primary 
-                                          : app_colors.neutral,
+                                    child: Text(
+                                      'APA',
+                                      style: app_colors.martianMonoTextStyle,
                                     ),
                                   ),
-                                  const SizedBox(width: 24),
-                                  Radio<CitationStyle>(
+                                  DropdownMenuItem(
                                     value: CitationStyle.mla,
-                                    groupValue: _selectedStyle,
-                                    fillColor: MaterialStateProperty.resolveWith(
-                                      (states) => states.contains(MaterialState.selected)
-                                          ? app_colors.primary
-                                          : app_colors.neutral,
-                                    ),
-                                    onChanged: (CitationStyle? value) {
-                                      if (value != null) {
-                                        setState(() {
-                                          _selectedStyle = value;
-                                          _saveSettings();
-                                        });
-                                      }
-                                    },
-                                  ),
-                                  Text(
-                                    'MLA',
-                                    style: app_colors.martianMonoTextStyle.copyWith(
-                                      color: _selectedStyle == CitationStyle.mla 
-                                          ? app_colors.primary 
-                                          : app_colors.neutral,
+                                    child: Text(
+                                      'MLA',
+                                      style: app_colors.martianMonoTextStyle,
                                     ),
                                   ),
-                                  const SizedBox(width: 24),
-                                  Radio<CitationStyle>(
+                                  DropdownMenuItem(
                                     value: CitationStyle.harvard,
-                                    groupValue: _selectedStyle,
-                                    fillColor: MaterialStateProperty.resolveWith(
-                                      (states) => states.contains(MaterialState.selected)
-                                          ? app_colors.primary
-                                          : app_colors.neutral,
-                                    ),
-                                    onChanged: (CitationStyle? value) {
-                                      if (value != null) {
-                                        setState(() {
-                                          _selectedStyle = value;
-                                          _saveSettings();
-                                        });
-                                      }
-                                    },
-                                  ),
-                                  Text(
-                                    'Harvard',
-                                    style: app_colors.martianMonoTextStyle.copyWith(
-                                      color: _selectedStyle == CitationStyle.harvard 
-                                          ? app_colors.primary 
-                                          : app_colors.neutral,
+                                    child: Text(
+                                      'Harvard',
+                                      style: app_colors.martianMonoTextStyle,
                                     ),
                                   ),
                                 ],
+                                onChanged: (CitationStyle? value) {
+                                  if (value != null) {
+                                    setState(() {
+                                      _selectedStyle = value;
+                                      _saveSettings();
+                                    });
+                                  }
+                                },
                               ),
                             ],
                           ),
@@ -336,11 +314,11 @@ class _SettingsDialogState extends State<SettingsDialog> {
                       ),
                     ),
                     const SizedBox(height: 16),
-                    if (kIsWeb)
+                    if (!_platformSupportsOllama)
                       Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 16.0),
                         child: Text(
-                          'Using OpenAI for web version',
+                          'Using OpenAI for this platform',
                           style: app_colors.martianMonoTextStyle.copyWith(
                             color: app_colors.primary,
                           ),
@@ -436,7 +414,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
                       ),
                     ),
                     const SizedBox(height: 16),
-                    if (!kIsWeb) ...[
+                    if (_platformSupportsOllama) ...[
                       Text(
                         'Experimental Features',
                         style: app_colors.martianMonoTextStyle.copyWith(

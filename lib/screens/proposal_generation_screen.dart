@@ -18,6 +18,21 @@ import 'package:process_run/shell.dart';
 import 'package:ollama_dart/ollama_dart.dart';
 import 'dart:async';
 
+// Helper to check if platform supports Ollama
+bool get _platformSupportsOllama {
+  if (kIsWeb) return false;
+  return Platform.isWindows || Platform.isLinux || Platform.isMacOS;
+}
+
+// Helper to check if device is mobile
+bool get _isMobileDevice {
+  if (kIsWeb) {
+    // For web, check window width
+    return false; // We'll handle this in the build method with MediaQuery
+  }
+  return Platform.isAndroid || Platform.isIOS;
+}
+
 class GenerationStep {
   final String title;
   final Future<void> Function() execute;
@@ -92,10 +107,14 @@ class _ProposalGenerationScreenState extends State<ProposalGenerationScreen> {
     super.initState();
    
     _checkSettings();
-     _initializeSteps();
+    _initializeSteps();
+    
+    // Initialize collapsed steps based on device type
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _initializeCollapsedState();
+    });
+    
     _startGeneration();
-
-
   }
 
   @override
@@ -295,9 +314,13 @@ Future<  Map<String,dynamic>?> getProductData(String link,String bs_key) async {
 
   void _initializeSteps() {
     final GetStorage storage = GetStorage();
-    final bool enableReferences = storage.read('ENABLE_REFERENCES') ?? true;
-    final bool enableBudget = storage.read('ENABLE_BUDGET') ?? true;
-    final bool useOpenAI = kIsWeb || storage.read('AI_PROVIDER') == 'openai';
+    final bool enableReferences = storage.read('ENABLE_REFERENCES') ?? false;
+    final bool enableBudget = storage.read('ENABLE_BUDGET') ?? false;
+    final bool useOpenAI = !_platformSupportsOllama || storage.read('AI_PROVIDER') == 'openai';
+    final String serpAPIKey = storage.read('SERP_API_KEY') ?? '';
+    final String browserlessAPIKey = storage.read('BROWSERLESS_API_KEY') ?? '';
+    final String openAIKey = storage.read('OPENAI_API_KEY') ?? '';
+    
     if(useOpenAI) {
       OpenAI.apiKey = storage.read('OPENAI_API_KEY');
     }
@@ -625,11 +648,21 @@ Future<  Map<String,dynamic>?> getProductData(String link,String bs_key) async {
         title: 'Finding References',
         dependencies: ['Title', 'Abstract', 'Problem Statement'],
         execute: () async {
-          // Your proposal generation code here
+          final GetStorage storage = GetStorage();
+          final String openAIKey = storage.read('OPENAI_API_KEY') ?? '';
+          final String serpAPIKey = storage.read('SERP_API_KEY') ?? '';
+          
+          // Check if required API keys are available
+          if (openAIKey.isEmpty || serpAPIKey.isEmpty) {
+            setState(() {
+              steps[getStepIndex('Finding References')].feedback = 
+                'Skipped. SERP API Key or OpenAI Key is not set';
+            });
+            return;
+          }
+          
           print('Finding references');
-                    final GetStorage storage = GetStorage();
-          final String? serpAPIKey = storage.read('SERP_API_KEY');
-;
+          final String citationStyle = storage.read('CITATION_STYLE') ?? 'apa';
           
           print("SERP KEY: $serpAPIKey");
           if(serpAPIKey == null) {
@@ -709,7 +742,6 @@ Future<  Map<String,dynamic>?> getProductData(String link,String bs_key) async {
             });
             final citationData = citationResponse.data as Map<String, dynamic>;
             final citations = citationData['citations'] as List<dynamic>;
-            final citationStyle = citationKey(storage.read('CITATION_STYLE').toString().toLowerCase());
             for(final citation in citations) {
               if(citation['style_shortname'] == citationStyle) {
                 result['citation'] = citation['citation'];
@@ -733,21 +765,27 @@ Future<  Map<String,dynamic>?> getProductData(String link,String bs_key) async {
       ),
       if (enableBudget) GenerationStep(
         title: 'Budget',
-        dependencies: [],
+        dependencies: !useOpenAI ? ['Loading Model'] : [],
         execute: () async {
-          final List<String> budgetLinks = widget.proposalDetails.hardwareLinks;
-          final Dio dio = Dio();
           final GetStorage storage = GetStorage();
-          final String? bs_key = storage.read('BROWSERLESS_API_KEY');
-          if(bs_key == null) {
+          final String browserlessAPIKey = storage.read('BROWSERLESS_API_KEY') ?? '';
+          
+          // Check if required API keys are available
+          if (browserlessAPIKey.isEmpty) {
             setState(() {
-              steps[getStepIndex('Budget')].feedback = 'Skipping budget as Browserless API Key is not set';
+              steps[getStepIndex('Budget')].feedback = 
+                'Budget generation skipped. Missing Browserless API key. Please add it in settings.';
             });
             return;
           }
+          
+          print('Generating budget');
+          final List<String> budgetLinks = widget.proposalDetails.hardwareLinks;
+          final Dio dio = Dio();
+          
           final List<String> toBeScrapedWithAI = [];
           for(final link in budgetLinks) {
-            final productData = await getProductData(link,bs_key);
+            final productData = await getProductData(link,browserlessAPIKey);
             if(productData == null) {
               toBeScrapedWithAI.add(link);
               continue;
@@ -770,7 +808,7 @@ Future<  Map<String,dynamic>?> getProductData(String link,String bs_key) async {
               Uri.parse('$base_url/scrape_info'),
               data: {'links': toBeScrapedWithAI,
               'openAIKey': storage.read('OPENAI_API_KEY'),
-              'browserless_token': bs_key,
+              'browserless_token': browserlessAPIKey,
               },
             );
             
@@ -818,7 +856,7 @@ Future<  Map<String,dynamic>?> getProductData(String link,String bs_key) async {
                   });
                 }
                 break;
-              }
+              } 
               
               if (status['status'] == 'error') {
                 setState(() {
@@ -835,7 +873,7 @@ Future<  Map<String,dynamic>?> getProductData(String link,String bs_key) async {
           }
         }),
       GenerationStep(
-        title: 'Export to PDF',
+        title: 'Saving PDF',
         dependencies: [
           'Title', 'Abstract', 'Motivation', 'Problem Statement', 
           'Research Hypothesis', 'Objectives', 'Methodology', 'Outcomes', 'Timeline',
@@ -878,7 +916,7 @@ ${proposalData['references'].map((e) => e['citation']).join('\n\n')}
 
           try{
             final dio = Dio();
-          final Response response = await dio.post('https://md2pdf.krishaay.dev/md2pdf',data: {
+          final Response response = await dio.post('https://kry0sc0pic--project2proposal-convert-md-to-pdf.modal.run',data: {
             'markdown' : markdownContent,
           },options: Options(
             responseType: ResponseType.bytes
@@ -893,10 +931,13 @@ ${proposalData['references'].map((e) => e['citation']).join('\n\n')}
 
           // final savePath = '${downloadsDirectory!.path}/$santizedTitle';
           // File(savePath).writeAsBytesSync(response.data as List<int>);
-          steps[getStepIndex('Export to PDF')].feedback = 'Saved to downloads folder: $santizedTitle.pdf';
+          steps[getStepIndex('Saving PDF')].feedback = 'Saved to downloads folder: $santizedTitle.pdf';
+          steps[getStepIndex('Saving PDF')+1].feedback = sPath;
+          
           } catch (e) {
             throw e;
           }
+
           
 
 
@@ -923,27 +964,27 @@ ${proposalData['references'].map((e) => e['citation']).join('\n\n')}
           
         },
       ),
-      GenerationStep(
-        title: 'Proposal Complete',
-        dependencies: ['Export to PDF'],
-        execute: () async {
-          final String pdfPath = steps[getStepIndex('Export to PDF')+1].feedback!;
+      // GenerationStep(
+      //   title: 'Proposal Complete',
+      //   dependencies: ['Export to PDF'],
+      //   execute: () async {
+      //     final String pdfPath = steps[getStepIndex('Export to PDF')+1].feedback!;
           
-          final String totalTime = _getTotalDuration();
+      //     final String totalTime = _getTotalDuration();
           
-          setState(() {
-            steps[getStepIndex('Proposal Complete')].feedback = 
-              'Your proposal is ready! You can find it at: $pdfPath\n\n' +
-              'Total generation time: $totalTime' +
-              (_totalGenerationTime != null ? ' (wall clock)' : ' (sum of steps)');
-          });
+      //     setState(() {
+      //       steps[getStepIndex('Proposal Complete')].feedback = 
+      //         'Your proposal is ready! You can find it at: $pdfPath\n\n' +
+      //         'Total generation time: $totalTime' +
+      //         (_totalGenerationTime != null ? ' (wall clock)' : ' (sum of steps)');
+      //     });
           
-          if(pdfPath.isNotEmpty){
-            OpenFile.open(pdfPath);
-          }
+      //     if(pdfPath.isNotEmpty){
+      //       OpenFile.open(pdfPath);
+      //     }
           
-        },
-      ),
+      //   },
+      // ),
     ].where((step) => step != null).toList(); // Remove null steps
     
     _stepErrors = List.filled(steps.length, '');
@@ -968,7 +1009,7 @@ ${proposalData['references'].map((e) => e['citation']).join('\n\n')}
     
     final GetStorage storage = GetStorage();
     final bool useParallel = storage.read('GENERATION_MODE') == 'parallel';
-    final bool useOpenAI = storage.read('AI_PROVIDER') == 'openai';
+    final bool useOpenAI = !_platformSupportsOllama || storage.read('AI_PROVIDER') == 'openai';
     
     if (useOpenAI || useParallel) {
       await _startParallelGeneration();
@@ -1157,7 +1198,7 @@ ${proposalData['references'].map((e) => e['citation']).join('\n\n')}
       _waitingForUser = false;
       final GetStorage storage = GetStorage();
       final bool useParallel = storage.read('GENERATION_MODE') == 'parallel';
-      final bool useOpenAI = storage.read('AI_PROVIDER') == 'openai';
+      final bool useOpenAI = !_platformSupportsOllama || storage.read('AI_PROVIDER') == 'openai';
       
       if (useOpenAI || useParallel) {
         final int index = _currentStep;
@@ -1252,38 +1293,118 @@ ${proposalData['references'].map((e) => e['citation']).join('\n\n')}
     final bool hasOpenAIKey = storage.read('OPENAI_API_KEY') != null;
     final bool hasSerpAPIKey = storage.read('SERP_API_KEY') != null;
     final bool hasBrowserlessKey = storage.read('BROWSERLESS_API_KEY') != null;
-    final bool enableReferences = storage.read('ENABLE_REFERENCES') ?? true;
-    final bool enableBudget = storage.read('ENABLE_BUDGET') ?? true;
+    final bool enableReferences = storage.read('ENABLE_REFERENCES') ?? false;
+    final bool enableBudget = storage.read('ENABLE_BUDGET') ?? false;
 
-    bool needsSettings = false;
+    bool showSettingsWarning = false;
+    List<String> missingKeys = [];
     
     // Check if OpenAI key is needed (required for both references and budget)
     if (!hasOpenAIKey && (enableReferences || enableBudget)) {
-      needsSettings = true;
+      showSettingsWarning = true;
+      missingKeys.add('OpenAI API key');
     }
     
     // Check if SERP API key is needed
     if (!hasSerpAPIKey && enableReferences) {
-      needsSettings = true;
+      showSettingsWarning = true;
+      missingKeys.add('SERP API key');
     }
     
     // Check if Browserless key is needed
     if (!hasBrowserlessKey && enableBudget) {
-      needsSettings = true;
+      showSettingsWarning = true;
+      missingKeys.add('Browserless API key');
     }
 
-    if (needsSettings) {
-      await showDialog(
+    if (showSettingsWarning && missingKeys.isNotEmpty) {
+      final bool openSettings = await showDialog<bool>(
         context: context,
-        builder: (context) => const SettingsDialog(),
-      );
+        builder: (context) => AlertDialog(
+          backgroundColor: app_colors.background,
+          title: Text(
+            'Missing API Keys',
+            style: app_colors.martianMonoTextStyle.copyWith(
+              color: app_colors.primary,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'The following API keys are missing:',
+                style: app_colors.martianMonoTextStyle,
+              ),
+              const SizedBox(height: 8),
+              ...missingKeys.map((key) => Padding(
+                padding: const EdgeInsets.only(left: 16.0, bottom: 4.0),
+                child: Text(
+                  '• $key',
+                  style: app_colors.martianMonoTextStyle,
+                ),
+              )),
+              const SizedBox(height: 8),
+              Text(
+                'Some features will be skipped. Would you like to add these keys now?',
+                style: app_colors.martianMonoTextStyle,
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: Text(
+                'Continue without keys',
+                style: app_colors.martianMonoTextStyle.copyWith(
+                  color: app_colors.neutral,
+                ),
+              ),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: Text(
+                'Open Settings',
+                style: app_colors.martianMonoTextStyle.copyWith(
+                  color: app_colors.primary,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ) ?? false;
+      
+      if (openSettings) {
+        await showDialog(
+          context: context,
+          builder: (context) => const SettingsDialog(),
+        );
+      }
     }
+  }
 
+  void _initializeCollapsedState() {
+    final bool shouldCollapseByDefault = _isMobileDevice || 
+        (kIsWeb && MediaQuery.of(context).size.width < 600);
     
+    if (shouldCollapseByDefault) {
+      setState(() {
+        // Collapse all steps except the first one
+        _collapsedSteps = Set.from(
+          List.generate(steps.length, (index) => index)
+            ..remove(0) // Keep the first step expanded
+        );
+      });
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    // For web, check screen width to determine if it's a mobile view
+    final bool isMobileView = _isMobileDevice || 
+        (kIsWeb && MediaQuery.of(context).size.width < 600);
+    
     return Scaffold(
       appBar: AppBar(
         title: const Text('Building Proposal'),
@@ -1304,7 +1425,29 @@ ${proposalData['references'].map((e) => e['citation']).join('\n\n')}
               tooltip: 'Cancel Generation',
               onPressed: _cancelGeneration,
             ),
-         
+          // Add a button to expand/collapse all sections
+          if (isMobileView)
+            IconButton(
+              icon: Icon(_collapsedSteps.length > steps.length / 2 
+                ? Icons.unfold_more 
+                : Icons.unfold_less),
+              tooltip: _collapsedSteps.length > steps.length / 2 
+                ? 'Expand All' 
+                : 'Collapse All',
+              onPressed: () {
+                setState(() {
+                  if (_collapsedSteps.length > steps.length / 2) {
+                    // More than half are collapsed, so expand all
+                    _collapsedSteps.clear();
+                  } else {
+                    // Less than half are collapsed, so collapse all
+                    _collapsedSteps = Set.from(
+                      List.generate(steps.length, (index) => index)
+                    );
+                  }
+                });
+              },
+            ),
         ],
       ),
       
