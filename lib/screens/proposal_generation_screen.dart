@@ -1,7 +1,9 @@
+import 'dart:convert';
 import 'dart:io' show Platform, Directory, File;
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'dart:typed_data';
-
+// ignore: avoid_web_libraries_in_flutter
+import 'dart:html' as html;
 import 'package:dart_openai/dart_openai.dart';
 import 'package:dio/dio.dart';
 import 'package:file_saver/file_saver.dart';
@@ -923,11 +925,31 @@ ${proposalData['references'].map((e) => e['citation']).join('\n\n')}
           ));
           String santizedTitle = sanitizeFilename(proposalData['title']);
 
-          final String sPath = await FileSaver.instance.saveAs(name: santizedTitle, ext: 'pdf', mimeType: MimeType.pdf,
+
+        void download(Uint8List bytes, {required String downloadName}) {
+
+        final base64 = base64Encode(bytes);
+
+        final anchor = html.AnchorElement(href: 'data:image/png;base64,$base64')..target = 'blank';
+
+        anchor.download = downloadName;
+
+        html.document.body?.append(anchor);
+
+        anchor.click();
+
+        anchor.remove();
+
+        } 
+
+          if (kIsWeb) {
+            download(Uint8List.fromList(response.data as List<int>),downloadName: santizedTitle);
+          } else {
+          await FileSaver.instance.saveAs(name: santizedTitle, ext: 'pdf', mimeType: MimeType.pdf,
           bytes: Uint8List.fromList(response.data as List<int>),
           dioClient: dio,
-
           ) ?? '';
+          }
 
           // final savePath = '${downloadsDirectory!.path}/$santizedTitle';
           // File(savePath).writeAsBytesSync(response.data as List<int>);
