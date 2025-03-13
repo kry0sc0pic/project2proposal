@@ -930,7 +930,7 @@ ${proposalData['references'].map((e) => e['citation']).join('\n\n')}
 
         final base64 = base64Encode(bytes);
 
-        final anchor = html.AnchorElement(href: 'data:image/png;base64,$base64')..target = 'blank';
+        final anchor = html.AnchorElement(href: 'data:application/pdf;base64,$base64')..target = 'blank';
 
         anchor.download = downloadName;
 
