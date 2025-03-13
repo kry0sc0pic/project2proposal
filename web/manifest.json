@@ -1,11 +1,11 @@
 {
-    "name": "project2proposal",
-    "short_name": "project2proposal",
+    "name": "Project2Proposal",
+    "short_name": "Project2Proposal",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#24242E",
-    "theme_color": "#FE8C52",
-    "description": "A new Flutter project.",
+    "background_color": "#23232D",
+    "theme_color": "#FE9560",
+    "description": "Project Proposals made effortless.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [
