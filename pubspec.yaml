@@ -46,6 +46,7 @@ dependencies:
   url_launcher: ^6.3.1
   dart_openai: ^5.1.0
   file_saver: ^0.2.14
+  sentry_flutter: ^8.14.0
   # appwrite: ^14.0.0
 
 dev_dependencies:

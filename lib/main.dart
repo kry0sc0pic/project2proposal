@@ -1,13 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:get_storage/get_storage.dart';
 import 'package:project2proposal/screens/settings_screen.dart';
+import 'package:sentry_flutter/sentry_flutter.dart';
 import 'constants.dart' as app_colors;
 import 'screens/proposal_generation_screen.dart';
 import 'models/proposal_details.dart';
 // import 'package:appwrite/appwrite.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
   // Client client = Client();
   // client.
   //   setProject('67b2c34b0023fa9dbd30')
@@ -15,7 +17,20 @@ void main() {
   
   final GetStorage storage = GetStorage();
   storage.getKeys();
-  runApp(const ProposalApp());
+  await SentryFlutter.init(
+    (options) {
+      options.dsn = 'https://7823527942b2ea9afb0978678fca6e1c@o4508941739098112.ingest.us.sentry.io/4508971879366656';
+      // Adds request headers and IP for users,
+      // visit: https://docs.sentry.io/platforms/dart/data-management/data-collected/ for more info
+      options.sendDefaultPii = true;
+    },
+    appRunner: () => runApp(
+      SentryWidget(
+        child: ProposalApp(),
+      ),
+    ),
+  );
+  // runApp(const ProposalApp());
 }
 
 class ProposalApp extends StatelessWidget {

@@ -1,10 +1,11 @@
 import modal
 from modal import image, App
 from fastapi.requests import Request
-from fastapi.responses import FileResponse
+from fastapi.responses import StreamingResponse
 
 md_image = (image.Image.from_registry('python:3.11').pip_install('markdown_pdf'))
 scrape_image = (image.Image.from_registry('python:3.11').pip_install('browser_use'))
+
 app = App('Project2Proposal')
 
 @app.function(image=md_image)
@@ -17,5 +18,10 @@ async def convert_md_to_pdf(request: Request):
     pdf.meta["title"] = "Proposal"
     pdf.meta["author"] = "Project2Proposal"
     pdf.save('temp.pdf')
-    return FileResponse('temp.pdf', media_type='application/pdf', filename='converted.pdf')
+    def iter_file():
+        with open('temp.pdf', 'rb') as f:
+            yield from f
+
+    return StreamingResponse(iter_file(), media_type='application/pdf', headers={"Content-Disposition": "attachment; filename=converted.pdf"})
+
 

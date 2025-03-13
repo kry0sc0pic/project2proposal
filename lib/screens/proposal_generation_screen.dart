@@ -881,7 +881,7 @@ Future<  Map<String,dynamic>?> getProductData(String link,String bs_key) async {
           if (enableBudget) 'Budget'
         ],
         execute: () async {
-          steps[getStepIndex('Export to PDF')].feedback = 'PDFs can take up to a minute to generate depending on server status. Please be patient.';
+          steps[getStepIndex('Saving PDF')].feedback = 'PDFs can take up to a minute to generate depending on server status. Please be patient.';
           final String markdownContent = 
           '''
 # Title
@@ -932,7 +932,7 @@ ${proposalData['references'].map((e) => e['citation']).join('\n\n')}
           // final savePath = '${downloadsDirectory!.path}/$santizedTitle';
           // File(savePath).writeAsBytesSync(response.data as List<int>);
           steps[getStepIndex('Saving PDF')].feedback = 'Saved to downloads folder: $santizedTitle.pdf';
-          steps[getStepIndex('Saving PDF')+1].feedback = sPath;
+          // steps[getStepIndex('Saving PDF')+1].feedback = sPath;
           
           } catch (e) {
             throw e;
