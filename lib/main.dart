@@ -5,10 +5,11 @@ import 'package:sentry_flutter/sentry_flutter.dart';
 import 'constants.dart' as app_colors;
 import 'screens/proposal_generation_screen.dart';
 import 'models/proposal_details.dart';
+import 'package:dart_openai/dart_openai.dart';
 // import 'package:appwrite/appwrite.dart';
 
 void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
+  // WidgetsFlutterBinding.ensureInitialized();
   
   // Client client = Client();
   // client.
@@ -17,12 +18,17 @@ void main() async {
   
   final GetStorage storage = GetStorage();
   storage.getKeys();
+  if(storage.read('OPENAI_API_KEY') != null){
+    print('API key found: ${storage.read('OPENAI_API_KEY')}');
+    OpenAI.apiKey = storage.read('OPENAI_API_KEY');
+  }
   await SentryFlutter.init(
     (options) {
       options.dsn = 'https://7823527942b2ea9afb0978678fca6e1c@o4508941739098112.ingest.us.sentry.io/4508971879366656';
       // Adds request headers and IP for users,
       // visit: https://docs.sentry.io/platforms/dart/data-management/data-collected/ for more info
       options.sendDefaultPii = true;
+   
     },
     appRunner: () => runApp(
       SentryWidget(
@@ -150,7 +156,17 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> {
                     SizedBox(
                       width: 200,
                       child: ElevatedButton(
+                        
                         onPressed: () {
+                          final GetStorage storage = GetStorage();
+                          if(storage.read('OPENAI_API_KEY') == null || storage.read('OPENAI_API_KEY').toString().trim() == ''){
+                           showDialog(
+                            context: context,
+                            builder: (context) => const SettingsDialog(),
+                           );
+                           return;
+                          }
+
                           Navigator.push(
                             context,
                             MaterialPageRoute(
@@ -308,6 +324,7 @@ class ReviewScreen extends StatelessWidget {
                 width: 200,
                 child: ElevatedButton(
                   onPressed: () {
+                    
                     final proposalDetails = ProposalDetails.fromForm(
                       projectDescription: projectDetails,
                       hardwareLinksText: hardwareLinks,

@@ -319,13 +319,8 @@ Future<  Map<String,dynamic>?> getProductData(String link,String bs_key) async {
     final bool enableReferences = storage.read('ENABLE_REFERENCES') ?? false;
     final bool enableBudget = storage.read('ENABLE_BUDGET') ?? false;
     final bool useOpenAI = !_platformSupportsOllama || storage.read('AI_PROVIDER') == 'openai';
-    final String serpAPIKey = storage.read('SERP_API_KEY') ?? '';
-    final String browserlessAPIKey = storage.read('BROWSERLESS_API_KEY') ?? '';
-    final String openAIKey = storage.read('OPENAI_API_KEY') ?? '';
     
-    if(useOpenAI) {
-      OpenAI.apiKey = storage.read('OPENAI_API_KEY');
-    }
+
     
     steps = [
       if (!useOpenAI) GenerationStep(
