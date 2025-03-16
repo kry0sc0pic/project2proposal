@@ -1,3 +1,4 @@
+import 'package:dart_openai/dart_openai.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'dart:io' show Platform;
@@ -55,6 +56,10 @@ class _SettingsDialogState extends State<SettingsDialog> {
     await storage.write('ENABLE_REFERENCES', _enableReferences);
     await storage.write('ENABLE_BUDGET', _enableBudget);
     await storage.write('GENERATION_MODE', _generationMode.name);
+    if(_openAIController.text.trim() != ''){
+    print('API key found: ${storage.read('OPENAI_API_KEY')}');
+      OpenAI.apiKey = _openAIController.text;
+  }
   }
 
   @override
