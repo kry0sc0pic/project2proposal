@@ -320,6 +320,9 @@ Future<  Map<String,dynamic>?> getProductData(String link,String bs_key) async {
     final bool enableBudget = storage.read('ENABLE_BUDGET') ?? false;
     final bool useOpenAI = !_platformSupportsOllama || storage.read('AI_PROVIDER') == 'openai';
     
+    if (useOpenAI) {
+      OpenAI.apiKey = storage.read('OPENAI_API_KEY');
+    }
 
     
     steps = [
