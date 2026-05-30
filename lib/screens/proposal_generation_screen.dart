@@ -671,14 +671,14 @@ Future<  Map<String,dynamic>?> getProductData(String link,String bs_key) async {
             });
             return;
           }
-          final titleStream = ollamaClient.generateCompletionStream(request: GenerateCompletionRequest(model: 'phi4:14b', prompt:  'Write a query term to find relevant patents in the google patents search syntax for the given methodolgy and abstract. Don\'t make the search the term very specific & keep it general to find results. Only respond with the query term in the search syntax and nothing else: \nAbstract: ${proposalData['abstract']}\nMethodology: ${proposalData['methodology']}'));
-          String searchQuery = '';
-          await for (final res in titleStream) {
-            searchQuery += res.response ?? '';
-            setState(() {
-              steps[getStepIndex('Finding References')].feedback = "Search Term: $searchQuery\n";
-            });
-          }
+          String searchQuery = await _generateText(
+            'Write a query term to find relevant patents in the google patents search syntax for the given methodolgy and abstract. Don\'t make the search the term very specific & keep it general to find results. Only respond with the query term in the search syntax and nothing else: \nAbstract: ${proposalData['abstract']}\nMethodology: ${proposalData['methodology']}',
+            onToken: (result) {
+              setState(() {
+                steps[getStepIndex('Finding References')].feedback = "Search Term: $result\n";
+              });
+            },
+          );
           searchQuery = searchQuery.replaceAll('`', '');
           setState(() {
             steps[getStepIndex('Finding References')].feedback = 'Search Term: "$searchQuery"\n';
