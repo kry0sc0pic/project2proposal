@@ -672,7 +672,7 @@ Future<  Map<String,dynamic>?> getProductData(String link,String bs_key) async {
             return;
           }
           String searchQuery = await _generateText(
-            'Write a query term to find relevant patents in the google patents search syntax for the given methodolgy and abstract. Don\'t make the search the term very specific & keep it general to find results. Only respond with the query term in the search syntax and nothing else: \nAbstract: ${proposalData['abstract']}\nMethodology: ${proposalData['methodology']}',
+            'Write a query term to find relevant patents in the google patents search syntax for the given methodology and abstract. Don\'t make the search the term very specific & keep it general to find results. Only respond with the query term in the search syntax and nothing else: \nAbstract: ${proposalData['abstract']}\nMethodology: ${proposalData['methodology']}',
             onToken: (result) {
               setState(() {
                 steps[getStepIndex('Finding References')].feedback = "Search Term: $result\n";
